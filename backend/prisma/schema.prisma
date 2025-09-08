@@ -1,0 +1,32 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Ausbildung {
+  id                   String   @id @default(cuid())
+  title                String
+  institution          String
+  location             String   @default("N/A")
+  startDate            String   @default("N/A") @map("start_date")
+  vacancies            String   @default("N/A")
+  description          String   @default("N/A")
+  emails               String // JSON string array
+  phones               String // JSON string array
+  url                  String   @unique
+  motivationLetterPath String?  @map("motivation_letter_path")
+  
+  // --- NEW FIELD ADDED ---
+  status               String   @default("Pending") // Tracks application status
+
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@map("ausbildung")
+}
