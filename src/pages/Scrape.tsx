@@ -31,40 +31,61 @@ const Scrape = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (!searchTerm || !location) {
-      toast.error('Please fill in all required fields');
+  
+    if (!searchTerm) {
+      toast.error('Please provide a search term to begin scraping.');
       return;
     }
-
+  
     if (pages < 1 || pages > 10) {
       toast.error('Number of pages must be between 1 and 10');
       return;
     }
 
+    // if (!searchTerm || !location) {
+    //   toast.error('Please fill in all required fields');
+    //   return;
+    // }
+  
+    // if (pages < 1 || pages > 10) {
+    //   toast.error('Number of pages must be between 1 and 10');
+    //   return;
+    // }
+  
     setIsLoading(true);
     setProgress(0);
     setScrapingComplete(false);
     setJobsFound(0);
-
-    // Simulate scraping process
-    const totalSteps = pages * 10;
-    const interval = setInterval(() => {
-      setProgress((prev) => {
-        const newProgress = prev + (100 / totalSteps);
-        if (newProgress >= 100) {
-          clearInterval(interval);
-          setIsLoading(false);
-          setScrapingComplete(true);
-          setJobsFound(Math.floor(Math.random() * 20) + 15); // Random between 15-34
-          toast.success('Scraping completed successfully!');
-          return 100;
-        }
-        return newProgress;
+  
+    try {
+      const response = await fetch('http://localhost:3000/api/scrape', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          searchTerm,
+          location,
+          numPages: pages,
+        }),
       });
-    }, 150);
+  
+      if (!response.ok) {
+        throw new Error('Failed to scrape jobs. Please try again.');
+      }
+  
+      const data = await response.json();
+  
+      setJobsFound(data.jobsFound || 0); // Assuming the API returns `jobsFound`
+      setScrapingComplete(true);
+      toast.success('Scraping completed successfully!');
+    } catch (error) {
+      console.error(error);
+      toast.error(error.message || 'An error occurred while scraping jobs.');
+    } finally {
+      setIsLoading(false);
+    }
   };
-
   const handleReset = () => {
     setProgress(0);
     setScrapingComplete(false);

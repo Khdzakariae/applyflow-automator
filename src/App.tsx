@@ -24,13 +24,20 @@ const App = () => (
         <Sonner />
         <BrowserRouter>
           <Routes>
+            {/* --- Public Routes --- */}
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
-            <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-            <Route path="/scrape" element={<ProtectedRoute><Scrape /></ProtectedRoute>} />
-            <Route path="/generate" element={<ProtectedRoute><Generate /></ProtectedRoute>} />
-            <Route path="/send-emails" element={<ProtectedRoute><SendEmails /></ProtectedRoute>} />
+            
+            {/* --- Protected Routes (User must be logged in) --- */}
+            {/* <Route element={<ProtectedRoute />}> */}
+              <Route path="/dashboard" element={<Dashboard />} />
+              <Route path="/scrape" element={<Scrape />} />
+              <Route path="/generate" element={<Generate />} />
+              <Route path="/send-emails" element={<SendEmails />} />
+            {/* </Route> */}
+            
+            {/* --- Not Found Route --- */}
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
