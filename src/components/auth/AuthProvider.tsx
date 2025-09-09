@@ -5,7 +5,21 @@ import { toast } from 'sonner';
 interface User {
   id: string;
   email: string;
-  name: string;
+  firstName: string;
+  lastName: string;
+  phoneNumber?: string;
+  dateOfBirth?: string;
+  address?: string;
+  city?: string;
+  zipCode?: string;
+  country?: string;
+  cvPath?: string;
+  preferredJobTypes?: string;
+  preferredLocations?: string;
+  isEmailVerified: boolean;
+  lastLoginAt?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface AuthContextType {
@@ -14,7 +28,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean; // To handle initial token check
   login: (email: string, password: string) => Promise<boolean>;
-  register: (email: string, password: string, name: string) => Promise<boolean>;
+  register: (email: string, password: string, firstName: string, lastName: string, phoneNumber?: string) => Promise<boolean>;
   logout: () => void;
 }
 
@@ -34,11 +48,11 @@ interface AuthProviderProps {
 
 // --- IMPORTANT ---
 // This code assumes your auth server has the following endpoints:
-// POST /api/auth/register - Body: { name, email, password }
-// POST /api/auth/login    - Body: { email, password }
-// GET  /api/auth/me        - Header: { Authorization: "Bearer <token>" }
+// POST /api/auth/signup - Body: { firstName, lastName, email, password, phoneNumber }
+// POST /api/auth/signin - Body: { email, password }
+// GET  /api/auth/profile - Header: { Authorization: "Bearer <token>" }
 //
-// And that a successful login/register returns: { user: { id, name, email }, token: "..." }
+// And that a successful login/register returns: { user: {...}, token: "...", jwtToken: "..." }
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
@@ -51,15 +65,15 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       if (token) {
         try {
           // Verify the token with the backend
-          const response = await fetch('http://localhost:3000/api/auth/me', {
+          const response = await fetch('http://localhost:3000/api/auth/profile', {
             headers: {
               'Authorization': `Bearer ${token}`,
             },
           });
 
           if (response.ok) {
-            const userData = await response.json();
-            setUser(userData);
+            const data = await response.json();
+            setUser(data.user);
           } else {
             // Token is invalid or expired
             localStorage.removeItem('authToken');
@@ -82,7 +96,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
-      const response = await fetch('http://localhost:3000/api/auth/login', {
+      const response = await fetch('http://localhost:3000/api/auth/signin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -90,7 +104,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.message || 'Login failed');
+        throw new Error(errorData.error || 'Login failed');
       }
 
       const { user: userData, token: authToken } = await response.json();
@@ -106,17 +120,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const register = async (email: string, password: string, name: string): Promise<boolean> => {
+  const register = async (email: string, password: string, firstName: string, lastName: string, phoneNumber?: string): Promise<boolean> => {
     try {
-      const response = await fetch('http://localhost:3000/api/auth/register', {
+      const response = await fetch('http://localhost:3000/api/auth/signup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ firstName, lastName, email, password, phoneNumber }),
       });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.message || 'Registration failed');
+        throw new Error(errorData.error || 'Registration failed');
       }
 
       const { user: userData, token: authToken } = await response.json();
@@ -132,10 +146,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     }
   };
 
-  const logout = () => {
-    setUser(null);
-    setToken(null);
-    localStorage.removeItem('authToken');
+  const logout = async () => {
+    try {
+      if (token) {
+        await fetch('http://localhost:3000/api/auth/logout', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      setUser(null);
+      setToken(null);
+      localStorage.removeItem('authToken');
+    }
   };
 
   const value = {

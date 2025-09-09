@@ -1,111 +1,111 @@
-import React, { useState, useEffect } from 'react'; // Import useEffect
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Navbar } from '@/components/layout/Navbar';
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
-import { Link } from 'react-router-dom';
 import { 
-  Search, 
+  Table, 
+  TableBody, 
+  TableCell, 
+  TableHead, 
+  TableHeader, 
+  TableRow 
+} from '@/components/ui/table';
+import { LoadingSpinner } from '@/components/ui/loading-spinner';
+import { useAuth } from '@/components/auth/AuthProvider';
+import { api } from '@/lib/api';
+import { 
+  BarChart3, 
+  FileText, 
+  Mail, 
+  Search,
+  Download,
   ExternalLink,
   MapPin,
+  Building,
   Calendar,
-  Building2,
-  FileText,
-  Plus,
-  TrendingUp,
-  Mail,
+  Plus
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { LoadingSpinner } from '@/components/ui/loading-spinner'; // Assuming you have this
-
-// MODIFIED: We will fetch stats from the API instead of using a mock object.
-const initialStats = {
-  totalJobs: 0,
-  jobsWithMotivationLetters: 0,
-  // Add other stats if your API provides them
-};
+import { Link } from 'react-router-dom';
+import { Navbar } from '@/components/layout/Navbar';
 
 const Dashboard = () => {
-  // MODIFIED: State for jobs, stats, loading, and errors
-  const [jobs, setJobs] = useState([]);
-  const [stats, setStats] = useState(initialStats);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-
+  const { user } = useAuth();
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
+  const [filteredJobs, setFilteredJobs] = useState<any[]>([]);
 
-  // MODIFIED: useEffect to fetch data from your API when the component loads
   useEffect(() => {
-    const fetchData = async () => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        // Fetch jobs from your API
-        const jobsResponse = await fetch('http://localhost:3000/api/jobs');
-        if (!jobsResponse.ok) throw new Error('Failed to fetch jobs');
-        const jobsData = await jobsResponse.json();
-        setJobs(jobsData);
+    fetchDashboardData();
+  }, []);
 
-        // Fetch stats from your API
-        const statsResponse = await fetch('http://localhost:3000/api/stats');
-        if (!statsResponse.ok) throw new Error('Failed to fetch stats');
-        const statsData = await statsResponse.json();
-        setStats(statsData);
-        
-        toast.success("Dashboard data loaded successfully!");
-      } catch (err) {
-        setError(err.message);
-        toast.error(err.message || "Failed to load dashboard data.");
-      } finally {
-        setIsLoading(false);
-      }
-    };
+  useEffect(() => {
+    if (searchTerm) {
+      const filtered = jobs.filter(job =>
+        job.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        job.institution?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        job.location?.toLowerCase().includes(searchTerm.toLowerCase())
+      );
+      setFilteredJobs(filtered);
+    } else {
+      setFilteredJobs(jobs);
+    }
+  }, [searchTerm, jobs]);
 
-    fetchData();
-  }, []); // The empty array [] means this effect runs once when the component mounts
-
-  // MODIFIED: The filtering logic now works on the fetched 'jobs' state
-  const filteredJobs = jobs.filter(job => {
-    const matchesSearch = job.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         job.institution.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         job.location.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    // This filter logic is basic. You might need to enhance the job object
-    // with a 'status' field if you want to filter by Applied, Ready, etc.
-    // const matchesFilter = filterStatus === 'all' || job.status.toLowerCase() === filterStatus;
-    
-    return matchesSearch; // && matchesFilter;
-  });
-
-  const getStatusColor = (job) => {
-    if (job.emailSent) return 'bg-green-100 text-green-800';
-    if (job.motivationLetterPath) return 'bg-blue-100 text-blue-800';
-    return 'bg-yellow-100 text-yellow-800';
-  };
-  
-  const getStatusText = (job) => {
-    if (job.emailSent) return 'Applied';
-    if (job.motivationLetterPath) return 'Ready to Send';
-    return 'Pending Letter';
+  const fetchDashboardData = async () => {
+    try {
+      const [jobsResponse, statsResponse] = await Promise.all([
+        api.getJobs(),
+        api.getStats()
+      ]);
+      
+      setJobs((jobsResponse as any)?.jobs || []);
+      setStats(statsResponse);
+    } catch (error) {
+      toast.error('Failed to load dashboard data');
+      console.error('Dashboard error:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
+  const getStatusVariant = (status: string) => {
+    switch (status) {
+      case 'Generated':
+      case 'Sent':
+      case 'Accepted':
+        return 'default';
+      case 'Pending':
+        return 'secondary';
+      case 'Interview':
+        return 'outline';
+      case 'Rejected':
+        return 'destructive';
+      default:
+        return 'secondary';
+    }
+  };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
-        <LoadingSpinner size="lg" />
-      </div>
-    );
-  }
+  const handleDownloadLetter = async (applicationId: string) => {
+    try {
+      await api.downloadLetter(applicationId);
+      toast.success('Letter downloaded successfully');
+    } catch (error) {
+      toast.error('Failed to download letter');
+    }
+  };
 
-  if (error) {
+  if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
-        <p className="text-red-500">Error: {error}</p>
+      <div className="min-h-screen bg-gradient-subtle">
+        <Navbar />
+        <div className="container flex-1 flex items-center justify-center px-4 py-12">
+          <LoadingSpinner size="lg" />
+        </div>
       </div>
     );
   }
@@ -115,145 +115,189 @@ const Dashboard = () => {
       <Navbar />
       
       <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <motion.div /* ... (no changes here) ... */ >
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <h1 className="text-3xl font-display font-bold mb-2">Dashboard</h1>
-              <p className="text-muted-foreground">
-                Track your job applications and automate your search
-              </p>
-            </div>
-            <div className="flex gap-3">
-              <Button asChild className="hero-button">
-                <Link to="/scrape">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Scrape Jobs
-                </Link>
-              </Button>
-            </div>
-          </div>
-        </motion.div>
+        <div className="mb-8">
+          <h1 className="text-3xl font-display font-bold mb-2">
+            Welcome back, {user?.firstName}! 👋
+          </h1>
+          <p className="text-muted-foreground">
+            Here's an overview of your job application progress
+          </p>
+        </div>
 
-        {/* MODIFIED: Stats Grid now uses fetched data */}
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
-        >
-          <Card className="hover:shadow-elegant transition-shadow">
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Total Jobs Found</p>
-                  <p className="text-2xl font-bold font-display">{stats.totalJobs}</p>
-                </div>
-                <div className="p-2 rounded-lg bg-muted/50 text-blue-600"><Search className="w-5 h-5" /></div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="hover:shadow-elegant transition-shadow">
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-muted-foreground mb-1">Letters Generated</p>
-                  <p className="text-2xl font-bold font-display">{stats.jobsWithMotivationLetters}</p>
-                </div>
-                <div className="p-2 rounded-lg bg-muted/50 text-green-600"><FileText className="w-5 h-5" /></div>
-              </div>
-            </CardContent>
-          </Card>
-          {/* You can add more stat cards here if your API provides more data */}
-        </motion.div>
+        {/* Stats Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <Card className="glass-effect border-0">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Total Applications</CardTitle>
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{(stats as any)?.overview?.totalApplications || 0}</div>
+            <p className="text-xs text-muted-foreground">
+              Jobs you've applied to
+            </p>
+          </CardContent>
+        </Card>
 
-        {/* MODIFIED: Jobs Table now uses fetched data */}
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.2 }}
-        >
-          <Card>
-            <CardHeader>
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-                <div>
-                  <CardTitle className="text-xl font-display">Job Applications</CardTitle>
-                  <CardDescription>
-                    Manage and track all your scraped job opportunities
-                  </CardDescription>
-                </div>
-                <div className="flex flex-col sm:flex-row gap-3">
-                  <div className="relative">
-                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      placeholder="Search jobs..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pl-10 w-full sm:w-[250px]"
-                    />
-                  </div>
-                </div>
+        <Card className="glass-effect border-0">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Generated Letters</CardTitle>
+            <FileText className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{(stats as any)?.overview?.pendingApplications || 0}</div>
+            <p className="text-xs text-muted-foreground">
+              Ready to send
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-effect border-0">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Emails Sent</CardTitle>
+            <Mail className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{(stats as any)?.overview?.sentApplications || 0}</div>
+            <p className="text-xs text-muted-foreground">
+              Applications submitted
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card className="glass-effect border-0">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
+            <BarChart3 className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{(stats as any)?.successRate || 0}%</div>
+            <p className="text-xs text-muted-foreground">
+              Acceptance rate
+            </p>
+          </CardContent>
+        </Card>
+        </div>
+
+        {/* Jobs Table */}
+        <Card className="glass-effect border-0 shadow-elegant">
+          <CardHeader>
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <CardTitle className="text-xl font-display">Your Applications</CardTitle>
+                <CardDescription>
+                  Track and manage your job applications
+                </CardDescription>
               </div>
-            </CardHeader>
-            <CardContent>
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Position</TableHead>
-                      <TableHead>Institution</TableHead>
-                      <TableHead>Location</TableHead>
-                      <TableHead>Start Date</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredJobs.map((job) => (
-                      <TableRow key={job.id}>
-                        <TableCell><div className="font-medium">{job.title}</div></TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Building2 className="w-4 h-4 text-muted-foreground" />{job.institution}
+              <div className="flex gap-3">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search applications..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="pl-10 w-full sm:w-[250px]"
+                  />
+                </div>
+                <Button asChild className="hero-button">
+                  <Link to="/scrape">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Scrape Jobs
+                  </Link>
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Job Title</TableHead>
+                    <TableHead>Institution</TableHead>
+                    <TableHead>Location</TableHead>
+                    <TableHead>Application Status</TableHead>
+                    <TableHead>Application Date</TableHead>
+                    <TableHead>Actions</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredJobs.map((job) => (
+                    <TableRow key={job.id} className="hover:bg-muted/50">
+                      <TableCell className="font-medium">{job.title}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center space-x-2">
+                          <Building className="h-4 w-4 text-muted-foreground" />
+                          <span>{job.institution}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center space-x-2">
+                          <MapPin className="h-4 w-4 text-muted-foreground" />
+                          <span>{job.location}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={getStatusVariant(job.application?.status || 'Draft')}>
+                          {job.application?.status || 'Not Applied'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {job.application?.applicationDate ? (
+                          <div className="flex items-center space-x-2">
+                            <Calendar className="h-4 w-4 text-muted-foreground" />
+                            <span>{new Date(job.application.applicationDate).toLocaleDateString()}</span>
                           </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <MapPin className="w-4 h-4 text-muted-foreground" />{job.location}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Calendar className="w-4 h-4 text-muted-foreground" />{job.startDate}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={getStatusColor(job)}>{getStatusText(job)}</Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Button asChild variant="ghost" size="sm">
-                            <a href={job.url} target="_blank" rel="noopener noreferrer">
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center space-x-2">
+                          {job.application?.motivationLetterPath && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleDownloadLetter(job.application.id)}
+                              className="flex items-center space-x-1"
+                            >
+                              <Download className="h-3 w-3" />
+                              <span>Letter</span>
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="flex items-center space-x-1"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            <span>Details</span>
                           </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-              
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+
               {filteredJobs.length === 0 && (
-                <div className="text-center py-8">
-                  <p className="text-muted-foreground mb-4">No jobs found. Try scraping some!</p>
-                  <Button asChild>
-                    <Link to="/scrape">Scrape Your First Jobs</Link>
+                <div className="text-center py-12">
+                  <FileText className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
+                  <h3 className="text-lg font-display font-semibold mb-2">No applications yet</h3>
+                  <p className="text-muted-foreground mb-6">
+                    Start by scraping some job opportunities to build your application pipeline
+                  </p>
+                  <Button asChild className="hero-button">
+                    <Link to="/scrape">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Scrape Your First Jobs
+                    </Link>
                   </Button>
                 </div>
               )}
-            </CardContent>
-          </Card>
-        </motion.div>
+            </div>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );
