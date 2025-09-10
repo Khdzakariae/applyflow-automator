@@ -295,8 +295,9 @@ class AusbildungScraperJS {
 
       for (let page = 1; page <= numPages; page++) {
         console.log(`\n📄 Scraping page ${page}...`);
-        
-        const searchUrl = `${this.baseUrl}?search=${this.searchTerm}&location=${this.location}&page=${page}`;
+        const searchUrl = `${this.baseUrl}?q=${this.searchTerm}&location=${this.location}&page=${page}`;
+
+        // const searchUrl = `${this.baseUrl}?search=${this.searchTerm}&location=${this.location}&page=${page}`;
         console.log(`   URL: ${searchUrl}`);
         
         await this.page.goto(searchUrl, { waitUntil: 'networkidle2' });

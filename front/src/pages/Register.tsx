@@ -11,12 +11,10 @@ import { Bot, Mail, Lock, User, ArrowLeft } from 'lucide-react';
 import { toast } from 'sonner';
 
 const Register = () => {
-  const [firstName, setFirstName] = useState('');
-  const [lastName, setLastName] = useState('');
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const { register } = useAuth();
   const navigate = useNavigate();
@@ -24,8 +22,8 @@ const Register = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!firstName || !lastName || !email || !password || !confirmPassword) {
-      toast.error('Please fill in all required fields');
+    if (!name || !email || !password || !confirmPassword) {
+      toast.error('Please fill in all fields');
       return;
     }
 
@@ -41,7 +39,7 @@ const Register = () => {
 
     setIsLoading(true);
     try {
-      const success = await register(email, password, firstName, lastName, phoneNumber || undefined);
+      const success = await register(email, password, name);
       if (success) {
         toast.success('Account created successfully!');
         navigate('/dashboard');
@@ -91,31 +89,15 @@ const Register = () => {
             <CardContent>
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="firstName">First Name</Label>
+                  <Label htmlFor="name">Full Name</Label>
                   <div className="relative">
                     <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                     <Input
-                      id="firstName"
+                      id="name"
                       type="text"
-                      placeholder="Enter your first name"
-                      value={firstName}
-                      onChange={(e) => setFirstName(e.target.value)}
-                      className="pl-10"
-                      disabled={isLoading}
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="lastName">Last Name</Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="lastName"
-                      type="text"
-                      placeholder="Enter your last name"
-                      value={lastName}
-                      onChange={(e) => setLastName(e.target.value)}
+                      placeholder="Enter your full name"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
                       className="pl-10"
                       disabled={isLoading}
                     />
@@ -138,22 +120,6 @@ const Register = () => {
                   </div>
                 </div>
                 
-                <div className="space-y-2">
-                  <Label htmlFor="phoneNumber">Phone Number (Optional)</Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
-                    <Input
-                      id="phoneNumber"
-                      type="tel"
-                      placeholder="Enter your phone number"
-                      value={phoneNumber}
-                      onChange={(e) => setPhoneNumber(e.target.value)}
-                      className="pl-10"
-                      disabled={isLoading}
-                    />
-                  </div>
-                </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="password">Password</Label>
                   <div className="relative">

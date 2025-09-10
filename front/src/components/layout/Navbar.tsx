@@ -87,7 +87,7 @@ export const Navbar = () => {
 
         <div className="flex items-center space-x-4">
           <span className="hidden sm:block text-sm text-muted-foreground">
-            Welcome, {user?.firstName} {user?.lastName}
+            Welcome, {user?.name}
           </span>
           <Button
             variant="ghost"

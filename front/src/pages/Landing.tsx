@@ -3,7 +3,7 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Navbar } from '@/components/layout/Navbar';
-import { InteractiveScene } from '@/components/3d/InteractiveScene';
+// import { InteractiveScene } from '@/components/3d/InteractiveScene';
 import { Link } from 'react-router-dom';
 import { 
   Bot, 
@@ -123,7 +123,7 @@ const Landing = () => {
               className="relative"
             >
               <div className="absolute inset-0 bg-gradient-mesh opacity-20 blur-3xl"></div>
-              <InteractiveScene />
+              {/* <InteractiveScene /> */}
             </motion.div>
           </div>
         </div>

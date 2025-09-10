@@ -11,11 +11,11 @@ const PDFDocument = require('pdfkit');
 const pdf = require('pdf-parse');
 const fs = require('fs');
 const { AuthService } = require('./services/AuthService'); // Adjust path if needed
-const { protect } = require('./middleware/auth');
-const authService = new AuthService();
-
+const { protect } = require('./middleware/auth'); // Adjust path if needed
 const config = require('./config');
 const { DatabaseManager } = require('./db-utils');
+const authService = new AuthService(); // Instantiate the auth service
+
 const {
   logger,
   FileManager,
@@ -31,12 +31,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- make logger.debug safe even if utils/logger doesn't provide it ---
 if (typeof logger.debug !== 'function') {
   logger.debug = (...args) => logger.info(...args);
 }
 
-// --- Simple progress tracker (replaces ProgressTracker) ---
 class SimpleProgressTracker {
   constructor(total, description = 'Progress') {
     this.total = total || 0;
@@ -359,9 +357,6 @@ class AusbildungScraperAdvanced {
   }
 }
 
-// ----------------------
-// Letter Generator
-// ----------------------
 class AdvancedMotivationLetterGenerator {
   constructor() {
     this.apiKey = config.apis.geminiApiKey;
@@ -459,9 +454,6 @@ class AdvancedMotivationLetterGenerator {
   }
 }
 
-// ----------------------
-// Email Sender
-// ----------------------
 class EmailSender {
   constructor() {
     // FIX: createTransport, not createTransporter
@@ -497,7 +489,7 @@ class EmailSender {
   }
 }
 
-// --- MULTER SETUP ---
+
 FileManager.ensureDirectory(config.paths.cvUploadsDir);
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, config.paths.cvUploadsDir),
@@ -505,8 +497,9 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// --- API ENDPOINTS ---
+
 app.get('/', (req, res) => res.send('Ausbildung Scraper API is running!'));
+
 
 app.post('/api/auth/signup', async (req, res) => {
   const { email, password, name } = req.body;
@@ -517,21 +510,12 @@ app.post('/api/auth/signup', async (req, res) => {
 
   try {
     const user = await authService.registerUser(email, password, name);
-
-    // Log in immediately after signup
+    // After successful registration, log in the user and return a token
     const { token } = await authService.loginUser(email, password);
-
-    // Store token in HTTP-only cookie
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000 // 1 day
-    });
-
     res.status(201).json({
       message: 'User registered successfully!',
       user: { id: user.id, email: user.email, name: user.name },
+      token,
       success: true
     });
   } catch (error) {
@@ -549,18 +533,10 @@ app.post('/api/auth/login', async (req, res) => {
 
   try {
     const { user, token } = await authService.loginUser(email, password);
-
-    // Store token in HTTP-only cookie
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000 // 1 day
-    });
-
     res.status(200).json({
       message: 'Logged in successfully!',
       user,
+      token,
       success: true
     });
   } catch (error) {
@@ -569,13 +545,16 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-
-app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie("token");
-  logger.info('User logged out (cookie cleared).');
-  res.status(200).json({ message: 'Logged out successfully.', success: true });
+// Logout is typically handled client-side by deleting the token.
+// However, you can optionally have a backend endpoint if you want to invalidate tokens (more complex).
+// For stateless JWTs, simply discarding the token client-side is sufficient.
+app.post('/api/auth/logout', protect, (req, res) => {
+  // If using stateless JWTs, no server-side action is strictly needed.
+  // This endpoint primarily serves as a confirmation and a place for future server-side token invalidation
+  // if you were to implement a blacklist or refresh tokens.
+  logger.info(`User ${req.user.email} logged out (token discarded client-side).`);
+  res.status(200).json({ message: 'Logged out successfully (token discarded).', success: true });
 });
-
 
 app.post('/api/scrape', async (req, res) => {
   const { searchTerm, location, numPages } = req.body;
@@ -616,7 +595,6 @@ app.post('/api/send-email', async (req, res) => {
     res.status(500).json({ error: 'Failed to send email.', details: error.message, success: false });
   }
 });
-
 
 app.get('/api/jobs', async (req, res) => {
   const dbManager = new DatabaseManager();
@@ -667,7 +645,6 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// --- START SERVER ---
 const PORT = config.app.port;
 app.listen(PORT, () => {
   logger.success(`🚀 API Server is running on http://localhost:${PORT}`);

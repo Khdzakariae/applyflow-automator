@@ -16,14 +16,16 @@
     "dependencies": {
         "@google/generative-ai": "^0.17.1",
         "@prisma/client": "^6.15.0",
+        "bcryptjs": "^3.0.2",
         "cors": "^2.8.5",
         "dotenv": "^16.3.1",
         "express": "^5.1.0",
+        "jsonwebtoken": "^9.0.2",
         "multer": "^2.0.2",
         "nodemailer": "^7.0.6",
         "pdf-parse": "^1.1.1",
         "pdfkit": "^0.13.0",
-        "puppeteer": "^21.3.6"
+        "puppeteer": "^24.19.0"
     },
     "devDependencies": {
         "prisma": "^6.15.0"
