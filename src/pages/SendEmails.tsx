@@ -8,6 +8,9 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { LoadingSpinner } from '@/components/ui/loading-spinner';
 import { Progress } from '@/components/ui/progress';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { 
   Mail, 
   Send, 
@@ -19,75 +22,36 @@ import {
   FileCheck,
   Clock,
   Eye,
-  Filter
+  Filter,
+  Plus,
+  Settings
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
+import { useJobs } from '@/hooks/useJobs';
+import { useEmailCampaigns } from '@/hooks/useEmailCampaigns';
+import { DocumentManager } from '@/components/email/DocumentManager';
+import { SendTypeSelector } from '@/components/email/SendTypeSelector';
 
-// Mock data for jobs ready to send
-const mockReadyJobs = [
-  {
-    id: '2',
-    title: 'Gesundheits- und Krankenpfleger',
-    institution: 'Charité Berlin',
-    location: 'Berlin, Deutschland',
-    startDate: '2024-04-01',
-    letterGenerated: true,
-    emailSent: false,
-    contactEmail: 'hr@charite.de'
-  },
-  {
-    id: '6',
-    title: 'Pflegefachkraft Neurologie',
-    institution: 'Universitätsklinikum Hamburg',
-    location: 'Hamburg, Deutschland',
-    startDate: '2024-04-15',
-    letterGenerated: true,
-    emailSent: false,
-    contactEmail: 'bewerbung@uke.de'
-  },
-  {
-    id: '7',
-    title: 'Intensivpfleger (m/w/d)',
-    institution: 'Klinikum Nürnberg',
-    location: 'Nürnberg, Bayern',
-    startDate: '2024-03-20',
-    letterGenerated: true,
-    emailSent: false,
-    contactEmail: 'personal@klinikum-nuernberg.de'
-  },
-];
-
-// Mock data for sent applications
-const mockSentApplications = [
-  {
-    id: '1',
-    title: 'Pflegefachmann/frau',
-    institution: 'Universitätsklinikum München',
-    location: 'München, Bayern',
-    sentDate: '2024-01-15',
-    status: 'Delivered'
-  },
-  {
-    id: '4',
-    title: 'Pflegefachkraft Intensivstation',
-    institution: 'Klinikum Stuttgart',
-    location: 'Stuttgart, Baden-Württemberg',
-    sentDate: '2024-01-20',
-    status: 'Delivered'
-  },
-];
+// ... keep existing code (mock data for sent applications section will be replaced with real data)
 
 const SendEmails = () => {
+  const { readyJobs, isLoading: jobsLoading } = useJobs();
+  const { campaigns, createCampaign, updateCampaignStatus } = useEmailCampaigns();
+  
   const [selectedJobs, setSelectedJobs] = useState<string[]>([]);
+  const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);
+  const [sendType, setSendType] = useState<'all' | 'individual'>('all');
+  const [campaignName, setCampaignName] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [progress, setProgress] = useState(0);
   const [sendingComplete, setSendingComplete] = useState(false);
   const [sentCount, setSentCount] = useState(0);
+  const [showCreateCampaign, setShowCreateCampaign] = useState(false);
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedJobs(mockReadyJobs.map(job => job.id));
+      setSelectedJobs(readyJobs.map(job => job.id));
     } else {
       setSelectedJobs([]);
     }
@@ -101,43 +65,86 @@ const SendEmails = () => {
     }
   };
 
-  const handleSendEmails = async () => {
+  const handleDocumentSelect = (documentId: string, checked: boolean) => {
+    if (checked) {
+      setSelectedDocuments(prev => [...prev, documentId]);
+    } else {
+      setSelectedDocuments(prev => prev.filter(id => id !== documentId));
+    }
+  };
+
+  const handleCreateCampaign = async () => {
     if (selectedJobs.length === 0) {
-      toast.error('Please select at least one job to send applications');
+      toast.error('Please select at least one job');
       return;
     }
 
+    if (!campaignName.trim()) {
+      toast.error('Please enter a campaign name');
+      return;
+    }
+
+    try {
+      const campaign = await createCampaign(
+        campaignName.trim(),
+        sendType,
+        selectedJobs,
+        selectedDocuments
+      );
+      
+      setShowCreateCampaign(false);
+      setCampaignName('');
+      
+      // Start sending process
+      await handleSendCampaign(campaign.id);
+    } catch (error) {
+      console.error('Failed to create campaign:', error);
+    }
+  };
+
+  const handleSendCampaign = async (campaignId: string) => {
     setIsSending(true);
     setProgress(0);
     setSendingComplete(false);
 
-    // Simulate sending emails
-    const totalEmails = selectedJobs.length;
-    const interval = setInterval(() => {
-      setProgress((prev) => {
-        const newProgress = prev + (100 / totalEmails);
-        if (newProgress >= 100) {
-          clearInterval(interval);
-          setIsSending(false);
-          setSendingComplete(true);
-          setSentCount(totalEmails);
-          toast.success(`Successfully sent ${totalEmails} applications!`);
-          return 100;
-        }
-        return newProgress;
-      });
-    }, 800);
+    try {
+      await updateCampaignStatus(campaignId, 'sending');
+      
+      // Simulate sending emails
+      const totalEmails = selectedJobs.length;
+      const interval = setInterval(async () => {
+        setProgress((prev) => {
+          const newProgress = prev + (100 / totalEmails);
+          if (newProgress >= 100) {
+            clearInterval(interval);
+            setIsSending(false);
+            setSendingComplete(true);
+            setSentCount(totalEmails);
+            updateCampaignStatus(campaignId, 'completed');
+            toast.success(`Successfully sent ${totalEmails} applications!`);
+            return 100;
+          }
+          return newProgress;
+        });
+      }, 800);
+    } catch (error) {
+      setIsSending(false);
+      await updateCampaignStatus(campaignId, 'failed');
+      toast.error('Failed to send campaigns');
+    }
   };
 
   const handleReset = () => {
     setSelectedJobs([]);
+    setSelectedDocuments([]);
     setProgress(0);
     setSendingComplete(false);
     setSentCount(0);
   };
 
-  const allSelected = selectedJobs.length === mockReadyJobs.length && mockReadyJobs.length > 0;
+  const allSelected = selectedJobs.length === readyJobs.length && readyJobs.length > 0;
   const someSelected = selectedJobs.length > 0;
+  const sentApplications = campaigns.filter(c => c.status === 'completed');
 
   return (
     <div className="min-h-screen bg-gradient-subtle">
@@ -186,13 +193,13 @@ const SendEmails = () => {
                     <div>
                       <CardTitle className="text-xl font-display flex items-center gap-2">
                         <FileCheck className="w-5 h-5 text-primary" />
-                        Ready to Send ({mockReadyJobs.length})
+                        Ready to Send ({readyJobs.length})
                       </CardTitle>
                       <CardDescription>
                         Jobs with generated motivation letters ready for application
                       </CardDescription>
                     </div>
-                    {mockReadyJobs.length > 0 && (
+                    {readyJobs.length > 0 && (
                       <div className="flex items-center gap-2">
                         <Checkbox
                           checked={allSelected}
@@ -204,7 +211,7 @@ const SendEmails = () => {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  {mockReadyJobs.length === 0 ? (
+                  {readyJobs.length === 0 ? (
                     <div className="text-center py-8">
                       <Mail className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
                       <h3 className="text-lg font-medium mb-2">No Applications Ready</h3>
@@ -229,7 +236,7 @@ const SendEmails = () => {
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {mockReadyJobs.map((job) => (
+                            {readyJobs.map((job) => (
                               <TableRow key={job.id} className={selectedJobs.includes(job.id) ? 'bg-muted/50' : ''}>
                                 <TableCell>
                                   <Checkbox
@@ -255,7 +262,7 @@ const SendEmails = () => {
                                 <TableCell>
                                   <div className="flex items-center gap-2">
                                     <Calendar className="w-4 h-4 text-muted-foreground" />
-                                    {new Date(job.startDate).toLocaleDateString('de-DE')}
+                                    {job.start_date ? new Date(job.start_date).toLocaleDateString('de-DE') : 'Not specified'}
                                   </div>
                                 </TableCell>
                               </TableRow>
@@ -309,25 +316,20 @@ const SendEmails = () => {
 
                       <div className="mt-6 flex justify-between items-center">
                         <p className="text-sm text-muted-foreground">
-                          {selectedJobs.length} of {mockReadyJobs.length} applications selected
+                          {selectedJobs.length} of {readyJobs.length} applications selected
                         </p>
-                        <Button
-                          onClick={handleSendEmails}
-                          disabled={selectedJobs.length === 0 || isSending || sendingComplete}
-                          className="hero-button"
-                        >
-                          {isSending ? (
-                            <>
-                              <LoadingSpinner size="sm" className="mr-2" />
-                              Sending...
-                            </>
-                          ) : (
-                            <>
+                        
+                        <Dialog open={showCreateCampaign} onOpenChange={setShowCreateCampaign}>
+                          <DialogTrigger asChild>
+                            <Button
+                              disabled={selectedJobs.length === 0 || isSending || sendingComplete}
+                              className="hero-button"
+                            >
                               <Send className="mr-2 h-4 w-4" />
-                              Send {selectedJobs.length} Application{selectedJobs.length !== 1 ? 's' : ''}
-                            </>
-                          )}
-                        </Button>
+                              Create Campaign
+                            </Button>
+                          </DialogTrigger>
+                        </Dialog>
                       </div>
                     </>
                   )}
@@ -354,7 +356,7 @@ const SendEmails = () => {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {mockSentApplications.length === 0 ? (
+                  {sentApplications.length === 0 ? (
                     <div className="text-center py-6">
                       <Mail className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
                       <p className="text-sm text-muted-foreground">
@@ -363,18 +365,17 @@ const SendEmails = () => {
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {mockSentApplications.map((app) => (
-                        <div key={app.id} className="p-3 border border-border rounded-lg">
-                          <div className="font-medium text-sm mb-1">{app.title}</div>
+                      {sentApplications.slice(0, 5).map((campaign) => (
+                        <div key={campaign.id} className="p-3 border border-border rounded-lg">
+                          <div className="font-medium text-sm mb-1">{campaign.name}</div>
                           <div className="text-xs text-muted-foreground mb-2">
-                            {app.institution}
+                            {campaign.total_emails} emails sent
                           </div>
                           <div className="flex items-center justify-between">
                             <div className="text-xs text-muted-foreground">
-                              {new Date(app.sentDate).toLocaleDateString('de-DE')}
-                            </div>
+                              {new Date(campaign.completed_at!).toLocaleDateString('de-DE')}</div>
                             <Badge variant="outline" className="text-xs">
-                              {app.status}
+                              {campaign.status}
                             </Badge>
                           </div>
                         </div>
