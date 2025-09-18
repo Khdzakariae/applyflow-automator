@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'; // Import useEffect
+import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Navbar } from '@/components/layout/Navbar';
 import { Button } from '@/components/ui/button';
@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Input } from '@/components/ui/input';
+import { LoadingSpinner } from '@/components/ui/loading-spinner';
 import { Link } from 'react-router-dom';
 import { 
   Search, 
@@ -17,95 +18,52 @@ import {
   Plus,
   TrendingUp,
   Mail,
+  Users,
+  Clock
 } from 'lucide-react';
-import { toast } from 'sonner';
-import { LoadingSpinner } from '@/components/ui/loading-spinner'; // Assuming you have this
-
-// MODIFIED: We will fetch stats from the API instead of using a mock object.
-const initialStats = {
-  totalJobs: 0,
-  jobsWithMotivationLetters: 0,
-  // Add other stats if your API provides them
-};
+import { useJobs } from '@/hooks/useJobs';
+import { useDocuments } from '@/hooks/useDocuments';
+import { useEmailCampaigns } from '@/hooks/useEmailCampaigns';
 
 const Dashboard = () => {
-  // MODIFIED: State for jobs, stats, loading, and errors
-  const [jobs, setJobs] = useState([]);
-  const [stats, setStats] = useState(initialStats);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState(null);
-
+  const { jobs, readyJobs, isLoading: jobsLoading } = useJobs();
+  const { documents, isLoading: docsLoading } = useDocuments();
+  const { campaigns, isLoading: campaignsLoading } = useEmailCampaigns();
+  
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
 
-  // MODIFIED: useEffect to fetch data from your API when the component loads
-  useEffect(() => {
-    const fetchData = async () => {
-      setIsLoading(true);
-      setError(null);
-      try {
-        // Fetch jobs from your API
-        const jobsResponse = await fetch('http://localhost:3000/api/jobs');
-        if (!jobsResponse.ok) throw new Error('Failed to fetch jobs');
-        const jobsData = await jobsResponse.json();
-        setJobs(jobsData);
+  const cvDocuments = documents.filter(doc => doc.is_cv);
+  const otherDocuments = documents.filter(doc => !doc.is_cv);
+  const completedCampaigns = campaigns.filter(c => c.status === 'completed');
 
-        // Fetch stats from your API
-        const statsResponse = await fetch('http://localhost:3000/api/stats');
-        if (!statsResponse.ok) throw new Error('Failed to fetch stats');
-        const statsData = await statsResponse.json();
-        setStats(statsData);
-        
-        toast.success("Dashboard data loaded successfully!");
-      } catch (err) {
-        setError(err.message);
-        toast.error(err.message || "Failed to load dashboard data.");
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []); // The empty array [] means this effect runs once when the component mounts
-
-  // MODIFIED: The filtering logic now works on the fetched 'jobs' state
   const filteredJobs = jobs.filter(job => {
     const matchesSearch = job.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          job.institution.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         job.location.toLowerCase().includes(searchTerm.toLowerCase());
-    
-    // This filter logic is basic. You might need to enhance the job object
-    // with a 'status' field if you want to filter by Applied, Ready, etc.
-    // const matchesFilter = filterStatus === 'all' || job.status.toLowerCase() === filterStatus;
-    
-    return matchesSearch; // && matchesFilter;
+                         (job.location && job.location.toLowerCase().includes(searchTerm.toLowerCase()));
+    return matchesSearch;
   });
 
-  const getStatusColor = (job) => {
-    if (job.emailSent) return 'bg-green-100 text-green-800';
-    if (job.motivationLetterPath) return 'bg-blue-100 text-blue-800';
+  const getStatusColor = (job: any) => {
+    if (completedCampaigns.some(c => c.id === job.id)) return 'bg-green-100 text-green-800';
+    if (job.letter_generated) return 'bg-blue-100 text-blue-800';
     return 'bg-yellow-100 text-yellow-800';
   };
   
-  const getStatusText = (job) => {
-    if (job.emailSent) return 'Applied';
-    if (job.motivationLetterPath) return 'Ready to Send';
+  const getStatusText = (job: any) => {
+    if (completedCampaigns.some(c => c.id === job.id)) return 'Applied';
+    if (job.letter_generated) return 'Ready to Send';
     return 'Pending Letter';
   };
 
+  const isLoading = jobsLoading || docsLoading || campaignsLoading;
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
-        <LoadingSpinner size="lg" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gradient-subtle flex items-center justify-center">
-        <p className="text-red-500">Error: {error}</p>
+      <div className="min-h-screen bg-gradient-subtle">
+        <Navbar />
+        <div className="flex items-center justify-center py-20">
+          <LoadingSpinner size="lg" />
+        </div>
       </div>
     );
   }
@@ -116,7 +74,12 @@ const Dashboard = () => {
       
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
-        <motion.div /* ... (no changes here) ... */ >
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+          className="mb-8"
+        >
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div>
               <h1 className="text-3xl font-display font-bold mb-2">Dashboard</h1>
@@ -135,7 +98,7 @@ const Dashboard = () => {
           </div>
         </motion.div>
 
-        {/* MODIFIED: Stats Grid now uses fetched data */}
+        {/* Stats Grid */}
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
@@ -147,27 +110,59 @@ const Dashboard = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground mb-1">Total Jobs Found</p>
-                  <p className="text-2xl font-bold font-display">{stats.totalJobs}</p>
+                  <p className="text-2xl font-bold font-display">{jobs.length}</p>
                 </div>
-                <div className="p-2 rounded-lg bg-muted/50 text-blue-600"><Search className="w-5 h-5" /></div>
+                <div className="p-2 rounded-lg bg-muted/50 text-blue-600">
+                  <Search className="w-5 h-5" />
+                </div>
               </div>
             </CardContent>
           </Card>
+          
           <Card className="hover:shadow-elegant transition-shadow">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-muted-foreground mb-1">Letters Generated</p>
-                  <p className="text-2xl font-bold font-display">{stats.jobsWithMotivationLetters}</p>
+                  <p className="text-2xl font-bold font-display">{readyJobs.length}</p>
                 </div>
-                <div className="p-2 rounded-lg bg-muted/50 text-green-600"><FileText className="w-5 h-5" /></div>
+                <div className="p-2 rounded-lg bg-muted/50 text-green-600">
+                  <FileText className="w-5 h-5" />
+                </div>
               </div>
             </CardContent>
           </Card>
-          {/* You can add more stat cards here if your API provides more data */}
+          
+          <Card className="hover:shadow-elegant transition-shadow">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground mb-1">Documents</p>
+                  <p className="text-2xl font-bold font-display">{documents.length}</p>
+                </div>
+                <div className="p-2 rounded-lg bg-muted/50 text-purple-600">
+                  <Users className="w-5 h-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card className="hover:shadow-elegant transition-shadow">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground mb-1">Applications Sent</p>
+                  <p className="text-2xl font-bold font-display">{completedCampaigns.length}</p>
+                </div>
+                <div className="p-2 rounded-lg bg-muted/50 text-orange-600">
+                  <Mail className="w-5 h-5" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </motion.div>
 
-        {/* MODIFIED: Jobs Table now uses fetched data */}
+        {/* Jobs Table */}
         <motion.div
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
@@ -211,28 +206,35 @@ const Dashboard = () => {
                   <TableBody>
                     {filteredJobs.map((job) => (
                       <TableRow key={job.id}>
-                        <TableCell><div className="font-medium">{job.title}</div></TableCell>
+                        <TableCell>
+                          <div className="font-medium">{job.title}</div>
+                        </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Building2 className="w-4 h-4 text-muted-foreground" />{job.institution}
+                            <Building2 className="w-4 h-4 text-muted-foreground" />
+                            {job.institution}
                           </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <MapPin className="w-4 h-4 text-muted-foreground" />{job.location}
+                            <MapPin className="w-4 h-4 text-muted-foreground" />
+                            {job.location || 'Not specified'}
                           </div>
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Calendar className="w-4 h-4 text-muted-foreground" />{job.startDate}
+                            <Calendar className="w-4 h-4 text-muted-foreground" />
+                            {job.start_date ? new Date(job.start_date).toLocaleDateString('de-DE') : 'Not specified'}
                           </div>
                         </TableCell>
                         <TableCell>
-                          <Badge className={getStatusColor(job)}>{getStatusText(job)}</Badge>
+                          <Badge className={getStatusColor(job)}>
+                            {getStatusText(job)}
+                          </Badge>
                         </TableCell>
                         <TableCell>
                           <Button asChild variant="ghost" size="sm">
-                            <a href={job.url} target="_blank" rel="noopener noreferrer">
+                            <a href={job.source_url} target="_blank" rel="noopener noreferrer">
                               <ExternalLink className="w-4 h-4" />
                             </a>
                           </Button>
