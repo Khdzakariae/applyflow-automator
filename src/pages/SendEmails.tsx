@@ -30,8 +30,8 @@ import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
 import { useJobs } from '@/hooks/useJobs';
 import { useEmailCampaigns } from '@/hooks/useEmailCampaigns';
+import { supabase } from '@/integrations/supabase/client';
 import { DocumentManager } from '@/components/email/DocumentManager';
-import { SendTypeSelector } from '@/components/email/SendTypeSelector';
 
 // ... keep existing code (mock data for sent applications section will be replaced with real data)
 
@@ -110,23 +110,28 @@ const SendEmails = () => {
     try {
       await updateCampaignStatus(campaignId, 'sending');
       
-      // Simulate sending emails
-      const totalEmails = selectedJobs.length;
-      const interval = setInterval(async () => {
-        setProgress((prev) => {
-          const newProgress = prev + (100 / totalEmails);
-          if (newProgress >= 100) {
-            clearInterval(interval);
-            setIsSending(false);
-            setSendingComplete(true);
-            setSentCount(totalEmails);
-            updateCampaignStatus(campaignId, 'completed');
-            toast.success(`Successfully sent ${totalEmails} applications!`);
-            return 100;
-          }
-          return newProgress;
-        });
-      }, 800);
+      // Call the actual email sending function
+      const { data: emailData, error: emailError } = await supabase.functions.invoke('send-email-with-attachments', {
+        body: { 
+          campaignId: campaignId, 
+          jobIds: selectedJobs,
+          documentIds: selectedDocuments
+        }
+      });
+
+      if (emailError) throw emailError;
+
+      setProgress(100);
+      setSentCount(emailData?.sentCount || selectedJobs.length);
+      setSendingComplete(true);
+      setIsSending(false);
+      
+      await updateCampaignStatus(campaignId, 'completed');
+      toast.success(`Successfully sent ${emailData?.sentCount || selectedJobs.length} emails!`);
+      
+      if (emailData?.errors && emailData.errors.length > 0) {
+        toast.warning(`Some emails failed to send. Check the logs for details.`);
+      }
     } catch (error) {
       setIsSending(false);
       await updateCampaignStatus(campaignId, 'failed');
@@ -329,6 +334,48 @@ const SendEmails = () => {
                               Create Campaign
                             </Button>
                           </DialogTrigger>
+                          <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+                            <DialogHeader>
+                              <DialogTitle>Create Email Campaign</DialogTitle>
+                              <DialogDescription>
+                                Configure your email campaign settings and select additional documents to attach
+                              </DialogDescription>
+                            </DialogHeader>
+                            <div className="space-y-6 py-4">
+                              <div className="space-y-2">
+                                <Label htmlFor="campaign-name">Campaign Name</Label>
+                                <Input
+                                  id="campaign-name"
+                                  placeholder="Enter campaign name..."
+                                  value={campaignName}
+                                  onChange={(e) => setCampaignName(e.target.value)}
+                                />
+                              </div>
+                              
+                              <div className="space-y-4">
+                                <h4 className="font-medium">Additional Documents</h4>
+                                <DocumentManager 
+                                  selectedDocuments={selectedDocuments}
+                                  onDocumentSelect={handleDocumentSelect}
+                                />
+                              </div>
+                              
+                              <div className="flex justify-end space-x-2">
+                                <Button
+                                  variant="outline"
+                                  onClick={() => setShowCreateCampaign(false)}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  onClick={handleCreateCampaign}
+                                  disabled={!campaignName}
+                                >
+                                  Create & Send
+                                </Button>
+                              </div>
+                            </div>
+                          </DialogContent>
                         </Dialog>
                       </div>
                     </>
