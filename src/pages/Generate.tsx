@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'; // Import useEffect
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Navbar } from '@/components/layout/Navbar';
 import { Button } from '@/components/ui/button';
@@ -16,6 +16,9 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Link } from 'react-router-dom';
+import { useJobs } from '@/hooks/useJobs';
+import { useCoverLetters } from '@/hooks/useCoverLetters';
+import { useDocuments } from '@/hooks/useDocuments';
 
 const Generate = () => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -23,31 +26,18 @@ const Generate = () => {
   const [generationComplete, setGenerationComplete] = useState(false);
   const [lettersGenerated, setLettersGenerated] = useState(0);
   
-  // MODIFIED: State to hold the number of jobs that need letters, fetched from the API
-  const [jobsToProcess, setJobsToProcess] = useState(0);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  // Use existing hooks to get data
+  const { jobs, isLoading } = useJobs();
+  const { generateCoverLetter, isGenerating: isGeneratingLetter } = useCoverLetters();
+  const { documents, isUploading, uploadDocument } = useDocuments();
+  
+  // Calculate jobs that need letters
+  const jobsNeedingLetters = jobs.filter(job => !job.letter_generated);
+  const cvDocument = documents.find(doc => doc.is_cv);
 
-  // MODIFIED: useEffect to fetch the number of pending jobs when the component loads
-  useEffect(() => {
-    const fetchPendingJobsCount = async () => {
-      try {
-        const response = await fetch('http://localhost:3000/api/stats');
-        if (!response.ok) {
-          throw new Error('Could not fetch stats.');
-        }
-        const stats = await response.json();
-        const pendingCount = stats.totalJobs - stats.jobsWithMotivationLetters;
-        setJobsToProcess(pendingCount >= 0 ? pendingCount : 0);
-      } catch (error) {
-        toast.error(error.message || 'Failed to get stats from the server.');
-      }
-    };
-
-    fetchPendingJobsCount();
-  }, []); // Empty array ensures this runs only once on mount
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (file.type !== 'application/pdf') {
@@ -58,17 +48,28 @@ const Generate = () => {
         toast.error('File size must be less than 5MB');
         return;
       }
-      setSelectedFile(file);
-      toast.success('CV uploaded successfully');
+      
+      try {
+        await uploadDocument(file, true); // Upload as CV
+        setSelectedFile(file);
+        toast.success('CV uploaded successfully');
+      } catch (error) {
+        toast.error('Failed to upload CV');
+      }
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
     if (file && file.type === 'application/pdf') {
-      setSelectedFile(file);
-      toast.success('CV uploaded successfully');
+      try {
+        await uploadDocument(file, true); // Upload as CV
+        setSelectedFile(file);
+        toast.success('CV uploaded successfully');
+      } catch (error) {
+        toast.error('Failed to upload CV');
+      }
     } else {
       toast.error('Please drop a valid PDF file.');
     }
@@ -85,39 +86,36 @@ const Generate = () => {
     }
   };
 
-  // MODIFIED: This function now makes a real API call
+  // Generate letters for all jobs without letters
   const handleGenerate = async () => {
-    if (!selectedFile) {
+    if (!cvDocument && !selectedFile) {
       toast.error('Please upload your CV first');
       return;
     }
 
     setIsGenerating(true);
     setGenerationComplete(false);
+    setLettersGenerated(0);
 
-    // Use FormData to send the file to the backend
-    const formData = new FormData();
-    formData.append('cv', selectedFile);
-
+    let successCount = 0;
+    
     try {
-      const response = await fetch('http://localhost:3000/api/generate-letters', {
-        method: 'POST',
-        body: formData, // The browser will automatically set the correct headers
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.details || 'Letter generation failed.');
+      for (const job of jobsNeedingLetters) {
+        try {
+          await generateCoverLetter(job.id);
+          successCount++;
+        } catch (error) {
+          console.error(`Failed to generate letter for job ${job.id}:`, error);
+        }
       }
-
-      const result = await response.json();
-      setLettersGenerated(result.generatedCount || 0);
+      
+      setLettersGenerated(successCount);
       setGenerationComplete(true);
-      toast.success(`Successfully generated ${result.generatedCount || 0} motivation letters!`);
+      toast.success(`Successfully generated ${successCount} motivation letters!`);
 
     } catch (error) {
-      console.error(error);
-      toast.error(error.message || 'An error occurred during letter generation.');
+      console.error('Generation error:', error);
+      toast.error('An error occurred during letter generation.');
     } finally {
       setIsGenerating(false);
     }
@@ -180,7 +178,7 @@ const Generate = () => {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                {!selectedFile ? (
+                {!selectedFile && !cvDocument ? (
                   <div
                     className="border-2 border-dashed border-muted-foreground/25 rounded-lg p-8 text-center hover:border-primary/50 transition-colors cursor-pointer"
                     onDrop={handleDrop}
@@ -198,9 +196,14 @@ const Generate = () => {
                     <div className="flex items-center gap-3">
                       <FileText className="w-10 h-10 text-primary" />
                       <div>
-                        <h4 className="font-medium">{selectedFile.name}</h4>
+                        <h4 className="font-medium">
+                          {selectedFile?.name || cvDocument?.name || 'CV'}
+                        </h4>
                         <p className="text-sm text-muted-foreground">
-                          {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+                          {selectedFile ? 
+                            `${(selectedFile.size / 1024 / 1024).toFixed(2)} MB` :
+                            `${((cvDocument?.file_size || 0) / 1024 / 1024).toFixed(2)} MB`
+                          }
                         </p>
                       </div>
                     </div>
@@ -243,7 +246,9 @@ const Generate = () => {
                     <FileCheck className="w-4 h-4 text-primary" />
                     Jobs Ready for Letter Generation
                   </div>
-                  <p className="text-2xl font-bold font-display text-primary">{jobsToProcess} Jobs</p>
+                  <p className="text-2xl font-bold font-display text-primary">
+                    {isLoading ? '...' : jobsNeedingLetters.length} Jobs
+                  </p>
                 </div>
 
                 {isGenerating && (
@@ -288,14 +293,14 @@ const Generate = () => {
                 <Button
                   onClick={handleGenerate}
                   className="w-full hero-button"
-                  disabled={!selectedFile || isGenerating || generationComplete || jobsToProcess === 0}
+                  disabled={(!cvDocument && !selectedFile) || isGenerating || isGeneratingLetter || generationComplete || jobsNeedingLetters.length === 0}
                 >
                   {isGenerating ? (
                     <><LoadingSpinner size="sm" className="mr-2" />Generating...</>
                   ) : generationComplete ? (
                     <><CheckCircle className="mr-2 h-4 w-4" />Complete</>
                   ) : (
-                    <><Wand2 className="mr-2 h-4 w-4" />Generate ({jobsToProcess}) Letters</>
+                    <><Wand2 className="mr-2 h-4 w-4" />Generate ({jobsNeedingLetters.length}) Letters</>
                   )}
                 </Button>
               </CardContent>
