@@ -110,32 +110,44 @@ const SendEmails = () => {
     try {
       await updateCampaignStatus(campaignId, 'sending');
       
-      // Call the actual email sending function
-      const { data: emailData, error: emailError } = await supabase.functions.invoke('send-email-with-attachments', {
-        body: { 
-          campaignId: campaignId, 
-          jobIds: selectedJobs,
-          documentIds: selectedDocuments
+      // Get JWT token from Supabase session
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('No authentication token found');
+      }
+      
+      // Call backend API to send emails
+      const response = await fetch('http://localhost:3000/api/email/send', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
         }
       });
 
-      if (emailError) throw emailError;
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to send emails');
+      }
+
+      const emailData = await response.json();
 
       setProgress(100);
-      setSentCount(emailData?.sentCount || selectedJobs.length);
+      setSentCount(emailData?.sentCount || 0);
       setSendingComplete(true);
       setIsSending(false);
       
       await updateCampaignStatus(campaignId, 'completed');
-      toast.success(`Successfully sent ${emailData?.sentCount || selectedJobs.length} emails!`);
+      toast.success(`Successfully sent ${emailData?.sentCount || 0} emails!`);
       
       if (emailData?.errors && emailData.errors.length > 0) {
-        toast.warning(`Some emails failed to send. Check the logs for details.`);
+        toast.warning(`Some emails failed to send: ${emailData.errors.length} errors`);
       }
     } catch (error) {
       setIsSending(false);
       await updateCampaignStatus(campaignId, 'failed');
-      toast.error('Failed to send campaigns');
+      toast.error(`Failed to send emails: ${error.message}`);
+      console.error('Email sending error:', error);
     }
   };
 
