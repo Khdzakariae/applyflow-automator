@@ -25,7 +25,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { DocumentManager } from '@/components/email/DocumentManager';
 
 // --- API Service Functions ---
-const API_BASE_URL = 'http://localhost:3000/api/ausbildung'; // Fixed URL to match backend
+const API_BASE_URL = '/api/ausbildung';
 
 const api = {
   async getAusbildungen() {

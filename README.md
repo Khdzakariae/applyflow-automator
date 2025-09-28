@@ -17,7 +17,7 @@ Copy `backend/.env.example` to `backend/.env` and set the values that apply to y
 
 - `DATABASE_URL` – SQLite connection string (defaults to `file:./dev.db`).
 - `PORT` / `HOST` – network binding for the API server.
-- `CLIENT_ORIGIN` – comma separated list of allowed browser origins (defaults to `http://localhost:8080`).
+- `CLIENT_ORIGIN` – comma separated list of allowed browser origins (defaults to `http://localhost:5173,http://localhost:8080`).
 - `GEMINI_API_KEY`, `GEMINI_MODEL` – Google Gemini access for letter generation.
 - `JWT_SECRET` – secret used to sign authentication tokens.
 - Optional SMTP values if you plan to send emails directly from the server.
@@ -33,7 +33,7 @@ npm install
 npm run dev
 ```
 
-The API listens on `http://localhost:3000`, and the Vite dev server proxies any `/api/*` requests back to Express.
+The Express API now runs on `http://localhost:8080` while the Vite dev server serves the UI on `http://localhost:5173` and proxies any `/api/*` requests to Express.
 
 ## Production build & single-server hosting
 

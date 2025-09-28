@@ -7,10 +7,10 @@ import { componentTagger } from "lovable-tagger";
 export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
-    port: 8080,
+    port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: "http://localhost:8080",
         changeOrigin: true,
         secure: false,
       },
@@ -19,6 +19,7 @@ export default defineConfig(({ mode }) => ({
   build: {
     outDir: path.resolve(__dirname, "../backend/public"),
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1024,
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
   resolve: {
