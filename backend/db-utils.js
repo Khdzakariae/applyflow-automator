@@ -1,43 +1,37 @@
-// db-utils.js
-const { PrismaClient } = require('@prisma/client');
+import { PrismaClient } from '@prisma/client';
+import { logger } from './utils.js';
+import fs from 'fs';
+import path from 'path';
+import { encryptSecret, decryptSecret } from './security.js';
 
 class DatabaseManager {
   constructor() {
     this.prisma = new PrismaClient();
-    this.isConnected = false;
   }
 
   async connect() {
-    try {
-      // Test the connection
-      await this.prisma.$connect();
-      console.log('✅ Connected to SQLite database successfully');
-      this.isConnected = true;
-      return true;
-    } catch (error) {
-      console.error('❌ Database connection error:', error.message);
-      this.isConnected = false;
-      throw error;
-    }
+    await this.prisma.$connect();
   }
 
+  
   async disconnect() {
-    try {
-      if (this.isConnected) {
-        await this.prisma.$disconnect();
-        console.log('🔌 Disconnected from database');
-        this.isConnected = false;
-      }
-    } catch (error) {
-      console.error('Error disconnecting from database:', error);
-    }
+    await this.prisma.$disconnect();
   }
 
-  // Helper methods for JSON handling
+  /**
+   * Serializes an array into a JSON string for database storage.
+   * @param {Array} array - The array to serialize.
+   * @returns {string} - The JSON string representation.
+   */
   _serializeArray(array) {
-    return Array.isArray(array) ? JSON.stringify(array) : '[]';
+    return JSON.stringify(array || []);
   }
 
+  /**
+   * Deserializes a JSON string back into an array.
+   * @param {string} jsonString - The JSON string from the database.
+   * @returns {Array} - The deserialized array.
+   */
   _deserializeArray(jsonString) {
     try {
       return JSON.parse(jsonString || '[]');
@@ -46,430 +40,339 @@ class DatabaseManager {
     }
   }
 
+  /**
+   * Transforms a database job object for client-side output.
+   * @param {object} job - The job object from Prisma.
+   * @returns {object|null} - The formatted job object.
+   */
   _transformJobForOutput(job) {
     if (!job) return null;
-    
     return {
-      ...job,
+      id: job.id,
+      title: job.title,
+      institution: job.institution,
+      location: job.location,
+      startDate: job.startDate,
+      vacancies: job.vacancies,
+      description: job.description,
       emails: this._deserializeArray(job.emails),
-      phones: this._deserializeArray(job.phones)
+      phones: this._deserializeArray(job.phones),
+      url: job.url,
+      motivationLetterPath: job.motivationLetterPath,
+      status: job.status,
+      userId: job.userId,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
     };
   }
-
-  _transformJobForInput(jobData) {
+  
+  /**
+   * Transforms client-side job data for database input.
+   * @param {object} jobData - The job data from the client.
+   * @param {string} userId - The associated user's ID.
+   * @returns {object} - The formatted data for Prisma.
+   */
+  _transformJobForInput(jobData, userId) {
     return {
-      ...jobData,
+      title: jobData.title,
+      institution: jobData.institution,
+      location: jobData.location || 'N/A',
+      startDate: jobData.start_date || jobData.startDate || 'N/A',
+      vacancies: jobData.vacancies || 'N/A',
+      description: jobData.description || 'N/A',
       emails: this._serializeArray(jobData.emails),
-      phones: this._serializeArray(jobData.phones)
+      phones: this._serializeArray(jobData.phones),
+      url: jobData.url,
+      userId,
     };
   }
 
-  // CRUD Operations
-  async createJob(jobData) {
+  /**
+   * Saves a document's data to the database.
+   * @param {string} userId - The ID of the user uploading the document.
+   * @param {object|Buffer} fileOrData - The file object from Multer (with buffer) or binary data.
+   * @param {string} originalName - Original name (for generated files).
+   * @param {string} mimeType - MIME type of the file.
+   * @returns {Promise<object>} The saved document record from the database.
+   */
+  async saveDocument(userId, fileOrData, originalName = null, mimeType = null) {
     try {
-      const transformedData = this._transformJobForInput(jobData);
-      const job = await this.prisma.ausbildung.create({
-        data: {
-          title: transformedData.title,
-          institution: transformedData.institution,
-          location: transformedData.location || 'N/A',
-          startDate: transformedData.start_date || 'N/A',
-          vacancies: transformedData.vacancies || 'N/A',
-          description: transformedData.description || 'N/A',
-          emails: transformedData.emails,
-          phones: transformedData.phones,
-          url: transformedData.url
-        }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      if (error.code === 'P2002') {
-        // Unique constraint violation, try to update existing
-        return await this.updateJobByUrl(jobData.url, jobData);
+      let data;
+      
+      if (Buffer.isBuffer(fileOrData)) {
+        // Direct binary data (for generated files)
+        data = {
+          userId,
+          filename: originalName || `document_${Date.now()}.pdf`,
+          originalName: originalName || `document_${Date.now()}.pdf`,
+          fileData: fileOrData,
+          mimeType: mimeType || 'application/pdf',
+          fileSize: fileOrData.length,
+        };
+      } else if (fileOrData.buffer) {
+        // Uploaded file (multer with memory storage)
+        data = {
+          userId,
+          filename: `${Date.now()}_${fileOrData.originalname}`,
+          originalName: fileOrData.originalname,
+          fileData: fileOrData.buffer,
+          mimeType: fileOrData.mimetype,
+          fileSize: fileOrData.size,
+        };
+      } else {
+        throw new Error('Invalid file data provided');
       }
+
+      const document = await this.prisma.document.create({ data });
+      logger.success(`Document saved to database: ${document.originalName} (${document.fileSize} bytes)`);
+      return document;
+    } catch (error) {
+      logger.error(`Failed to save document to database: ${error.message}`);
       throw error;
     }
   }
 
-  async updateJobStatus(id, newStatus) {
-    return this.prisma.ausbildung.update({
-      where: { id },
+  /**
+   * Retrieves all documents for a specific user.
+   * @param {string} userId - The user ID.
+   * @returns {Promise<Array>} Array of user documents.
+   */
+  async getUserDocuments(userId) {
+    try {
+      const documents = await this.prisma.document.findMany({
+        where: { userId },
+        select: {
+          id: true,
+          filename: true,
+          originalName: true,
+          mimeType: true,
+          fileSize: true,
+          createdAt: true,
+          updatedAt: true
+          // Exclude fileData from general listing for performance
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      return documents;
+    } catch (error) {
+      logger.error(`Failed to fetch user documents: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Retrieves a specific document with file data.
+   * @param {string} documentId - The document ID.
+   * @param {string} userId - The user ID (for security).
+   * @returns {Promise<object>} The document with file data.
+   */
+  async getDocumentWithData(documentId, userId) {
+    try {
+      const document = await this.prisma.document.findFirst({
+        where: { 
+          id: documentId,
+          userId: userId
+        }
+      });
+      
+      if (!document) {
+        throw new Error('Document not found or access denied');
+      }
+      
+      return document;
+    } catch (error) {
+      logger.error(`Failed to fetch document data: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Deletes a document by ID.
+   * @param {string} documentId - The document ID.
+   * @param {string} userId - The user ID (for security).
+   * @returns {Promise<object>} The deleted document.
+   */
+  async deleteDocument(documentId, userId) {
+    try {
+      // First check if document exists and belongs to user
+      const document = await this.prisma.document.findFirst({
+        where: { id: documentId, userId }
+      });
+
+      if (!document) {
+        throw new Error('Document not found or access denied');
+      }
+
+      // Delete file from filesystem
+      if (fs.existsSync(document.filePath)) {
+        fs.unlinkSync(document.filePath);
+      }
+
+      // Delete from database
+      const deletedDocument = await this.prisma.document.delete({
+        where: { id: documentId }
+      });
+
+      logger.success(`Document deleted: ${deletedDocument.originalName}`);
+      return deletedDocument;
+    } catch (error) {
+      logger.error(`Failed to delete document: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  async createJob(jobData, userId) {
+    const data = this._transformJobForInput(jobData, userId);
+    const job = await this.prisma.ausbildung.create({ data });
+    return this._transformJobForOutput(job);
+  }
+
+  async findJobById(id) {
+    const job = await this.prisma.ausbildung.findUnique({ where: { id } });
+    return this._transformJobForOutput(job);
+  }
+
+  async findJobByUrl(url, userId) {
+    const job = await this.prisma.ausbildung.findUnique({
+      where: { url_userId: { url, userId } },
+    });
+    return this._transformJobForOutput(job);
+  }
+  
+  async updateJobByUrl(url, userId, jobData) {
+    const data = this._transformJobForInput(jobData, userId);
+    const job = await this.prisma.ausbildung.update({
+      where: { url_userId: { url, userId } },
+      data,
+    });
+    return this._transformJobForOutput(job);
+  }
+
+  async updateJobStatus(jobId, newStatus) {
+    return await this.prisma.ausbildung.update({
+      where: { id: jobId },
       data: { status: newStatus },
     });
   }
   
-  async findJobById(id) {
-    try {
-      const job = await this.prisma.ausbildung.findUnique({
-        where: { id }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error finding job by ID:', error);
-      return null;
-    }
+  async updateMotivationLetterData(jobId, letterData) {
+    return await this.prisma.ausbildung.update({
+      where: { id: jobId },
+      data: { motivationLetter: letterData },
+    });
   }
 
-  async findJobByUrl(url) {
-    try {
-      const job = await this.prisma.ausbildung.findUnique({
-        where: { url }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error finding job by URL:', error);
-      return null;
-    }
+  async findAllJobs(userId) {
+    const jobs = await this.prisma.ausbildung.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+    return jobs.map(j => this._transformJobForOutput(j));
   }
 
-  async findAllJobs(filter = {}, limit = 0, skip = 0) {
-    try {
-      const where = {};
-      
-      // Build where clause from filter
-      if (filter.institution) {
-        where.institution = { contains: filter.institution };
-      }
-      if (filter.location) {
-        where.location = { contains: filter.location };
-      }
-      if (filter.title) {
-        where.title = { contains: filter.title };
-      }
-
-      const jobs = await this.prisma.ausbildung.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        ...(skip > 0 && { skip }),
-        ...(limit > 0 && { take: limit })
-      });
-
-      return jobs.map(job => this._transformJobForOutput(job));
-    } catch (error) {
-      console.error('Error finding jobs:', error);
-      return [];
+  /**
+   * Finds all jobs that have emails but no motivation letter yet.
+   * This is used by the letter generator.
+   * @returns {Promise<Array<object>>} A list of jobs needing letters.
+   */
+  async findJobsWithoutMotivationLetter(userId) {
+    if (!userId) {
+      throw new Error('User ID is required to fetch jobs');
     }
+
+    const jobs = await this.prisma.ausbildung.findMany({
+      where: {
+        AND: [
+          { userId },
+          { emails: { not: "" } },
+          { OR: [
+            { motivationLetter: null },
+            { motivationLetter: { equals: Buffer.alloc(0) } }
+          ]}
+        ],
+      },
+      orderBy: { createdAt: "asc" },
+    });
+    return jobs.map(j => this._transformJobForOutput(j));
   }
 
-  async findJobsWithoutMotivationLetter() {
-    try {
-      const jobs = await this.prisma.ausbildung.findMany({
-        where: {
-          AND: [
-            { emails: { not: '[]' } },
-            { 
-              OR: [
-                { motivationLetterPath: null },
-                { motivationLetterPath: '' }
-              ]
-            }
-          ]
-        },
-        orderBy: { createdAt: 'desc' }
-      });
-
-      return jobs.map(job => ({
-        ...this._transformJobForOutput(job),
-        _id: job.id, // Add _id for compatibility with existing code
-        toObject: () => this._transformJobForOutput(job)
-      }));
-    } catch (error) {
-      console.error('Error finding jobs without motivation letters:', error);
-      return [];
-    }
+  _transformIntegrationForOutput(record) {
+    if (!record) return null;
+    return {
+      ...record,
+      geminiApiKey: decryptSecret(record.geminiApiKey),
+      smtpUser: decryptSecret(record.smtpUser),
+      smtpPass: decryptSecret(record.smtpPass),
+    };
   }
 
-  async updateJobById(id, updateData) {
-    try {
-      const transformedData = this._transformJobForInput(updateData);
-      const job = await this.prisma.ausbildung.update({
-        where: { id },
-        data: {
-          ...(transformedData.title && { title: transformedData.title }),
-          ...(transformedData.institution && { institution: transformedData.institution }),
-          ...(transformedData.location && { location: transformedData.location }),
-          ...(transformedData.start_date && { startDate: transformedData.start_date }),
-          ...(transformedData.vacancies && { vacancies: transformedData.vacancies }),
-          ...(transformedData.description && { description: transformedData.description }),
-          ...(transformedData.emails && { emails: transformedData.emails }),
-          ...(transformedData.phones && { phones: transformedData.phones })
-        }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error updating job by ID:', error);
-      return null;
-    }
+  _transformIntegrationForStorage(settings) {
+    return {
+      geminiApiKey: settings.geminiApiKey ? encryptSecret(settings.geminiApiKey) : null,
+      geminiModel: settings.geminiModel || undefined,
+      smtpUser: settings.smtpUser ? encryptSecret(settings.smtpUser) : null,
+      smtpPass: settings.smtpPass ? encryptSecret(settings.smtpPass) : null,
+      smtpHost: settings.smtpHost || undefined,
+      smtpPort: settings.smtpPort ? Number(settings.smtpPort) : undefined,
+    };
   }
 
-  async updateJobByUrl(url, updateData) {
-    try {
-      const transformedData = this._transformJobForInput(updateData);
-      const job = await this.prisma.ausbildung.update({
-        where: { url },
-        data: {
-          ...(transformedData.title && { title: transformedData.title }),
-          ...(transformedData.institution && { institution: transformedData.institution }),
-          ...(transformedData.location && { location: transformedData.location }),
-          ...(transformedData.start_date && { startDate: transformedData.start_date }),
-          ...(transformedData.vacancies && { vacancies: transformedData.vacancies }),
-          ...(transformedData.description && { description: transformedData.description }),
-          ...(transformedData.emails && { emails: transformedData.emails }),
-          ...(transformedData.phones && { phones: transformedData.phones })
-        }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error updating job by URL:', error);
-      return null;
-    }
+  async getUserIntegration(userId) {
+    const record = await this.prisma.userIntegration.findUnique({ where: { userId } });
+    return this._transformIntegrationForOutput(record);
   }
 
-  async updateMotivationLetterPath(id, filePath) {
-    try {
-      const job = await this.prisma.ausbildung.update({
-        where: { id },
-        data: { motivationLetterPath: filePath }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error updating motivation letter path:', error);
-      return null;
-    }
+  async upsertUserIntegration(userId, settings) {
+    const storageData = this._transformIntegrationForStorage(settings);
+    const record = await this.prisma.userIntegration.upsert({
+      where: { userId },
+      update: {
+        ...storageData,
+        updatedAt: new Date(),
+      },
+      create: {
+        userId,
+        ...storageData,
+      },
+    });
+    return this._transformIntegrationForOutput(record);
   }
 
-  async deleteJobById(id) {
+  async getJobStats(userId) {
     try {
-      const job = await this.prisma.ausbildung.delete({
-        where: { id }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error deleting job by ID:', error);
-      return null;
-    }
-  }
-
-  async deleteJobByUrl(url) {
-    try {
-      const job = await this.prisma.ausbildung.delete({
-        where: { url }
-      });
-      return this._transformJobForOutput(job);
-    } catch (error) {
-      console.error('Error deleting job by URL:', error);
-      return null;
-    }
-  }
-
-  // Statistics and Analytics
-  async getJobStats() {
-    try {
-      const totalJobs = await this.prisma.ausbildung.count();
-      
-      const jobsWithEmails = await this.prisma.ausbildung.count({
-        where: { emails: { not: '[]' } }
-      });
-      
+      const totalJobs = await this.prisma.ausbildung.count({ where: { userId } });
       const jobsWithMotivationLetters = await this.prisma.ausbildung.count({
-        where: { 
-          motivationLetterPath: { not: null },
-          motivationLetterPath: { not: '' }
-        }
+        where: { userId, motivationLetterPath: { not: null } },
       });
 
-      // Top institutions
-      const institutionStats = await this.prisma.$queryRaw`
-        SELECT institution as _id, COUNT(*) as count 
-        FROM ausbildung 
-        GROUP BY institution 
-        ORDER BY count DESC 
-        LIMIT 10
-      `;
-
-      // Location stats
-      const locationStatsRaw = await this.prisma.$queryRaw`
-        SELECT location as _id, COUNT(*) as count 
-        FROM ausbildung 
-        WHERE location != 'N/A' 
-        GROUP BY location 
-        ORDER BY count DESC 
-        LIMIT 10
-      `;
-
-      return {
-        totalJobs,
-        jobsWithEmails,
-        jobsWithMotivationLetters,
-        jobsWithoutMotivationLetters: jobsWithEmails - jobsWithMotivationLetters,
-        topInstitutions: institutionStats,
-        locationStats: locationStatsRaw
-      };
-    } catch (error) {
-      console.error('Error getting job statistics:', error);
-      return null;
-    }
-  }
-
-  async searchJobs(searchTerm, searchFields = ['title', 'institution', 'location']) {
-    try {
-      const orConditions = searchFields.map(field => ({
-        [field]: { contains: searchTerm, mode: 'insensitive' }
-      }));
-
-      const jobs = await this.prisma.ausbildung.findMany({
-        where: { OR: orConditions },
-        orderBy: { createdAt: 'desc' }
-      });
-
-      return jobs.map(job => this._transformJobForOutput(job));
-    } catch (error) {
-      console.error('Error searching jobs:', error);
-      return [];
-    }
-  }
-
-  // Bulk operations
-  async bulkCreateJobs(jobsArray) {
-    try {
-      const results = {
-        created: 0,
-        updated: 0,
-        failed: 0,
-        errors: []
-      };
-
-      for (const jobData of jobsArray) {
-        try {
-          const existingJob = await this.findJobByUrl(jobData.url);
-          
-          if (existingJob) {
-            await this.updateJobByUrl(jobData.url, jobData);
-            results.updated++;
-          } else {
-            await this.createJob(jobData);
-            results.created++;
-          }
-        } catch (error) {
-          results.failed++;
-          results.errors.push({
-            url: jobData.url,
-            error: error.message
-          });
-        }
-      }
-
-      return results;
-    } catch (error) {
-      console.error('Error in bulk create operation:', error);
-      throw error;
-    }
-  }
-
-  async cleanupOldJobs(daysOld = 30) {
-    try {
-      const cutoffDate = new Date();
-      cutoffDate.setDate(cutoffDate.getDate() - daysOld);
-      
-      const result = await this.prisma.ausbildung.deleteMany({
-        where: {
-          createdAt: { lt: cutoffDate }
-        }
-      });
-      
-      console.log(`🧹 Cleaned up ${result.count} jobs older than ${daysOld} days`);
-      return result.count;
-    } catch (error) {
-      console.error('Error cleaning up old jobs:', error);
-      return 0;
-    }
-  }
-
-  // Export/Import functionality
-  async exportToJSON(filename = null) {
-    try {
-      const jobs = await this.findAllJobs();
-      const exportData = {
-        exportDate: new Date().toISOString(),
-        totalJobs: jobs.length,
-        jobs: jobs
-      };
-
-      if (filename) {
-        const fs = require('fs').promises;
-        await fs.writeFile(filename, JSON.stringify(exportData, null, 2), 'utf8');
-        console.log(`📁 Data exported to ${filename}`);
-      }
-
-      return exportData;
-    } catch (error) {
-      console.error('Error exporting data:', error);
-      throw error;
-    }
-  }
-
-  async importFromJSON(filename) {
-    try {
-      const fs = require('fs').promises;
-      const fileContent = await fs.readFile(filename, 'utf8');
-      const importData = JSON.parse(fileContent);
-      
-      if (!importData.jobs || !Array.isArray(importData.jobs)) {
-        throw new Error('Invalid import file format');
-      }
-
-      const result = await this.bulkCreateJobs(importData.jobs);
-      console.log(`🔥 Import completed: ${result.created} created, ${result.updated} updated, ${result.failed} failed`);
-      
-      return result;
-    } catch (error) {
-      console.error('Error importing data:', error);
-      throw error;
-    }
-  }
-
-  async getJobStats() {
-    try {
-      const totalJobs = await this.prisma.ausbildung.count();
-      const jobsWithMotivationLetters = await this.prisma.ausbildung.count({
-        where: { motivationLetterPath: { not: null } }
-      });
-
-      // MODIFIED: Replaced raw SQL with Prisma's type-safe aggregation
       const topInstitutionsData = await this.prisma.ausbildung.groupBy({
         by: ['institution'],
-        _count: {
-          institution: true,
-        },
-        orderBy: {
-          _count: {
-            institution: 'desc',
-          },
-        },
+        where: { userId },
+        _count: { institution: true },
+        orderBy: { _count: { institution: 'desc' } },
         take: 5,
       });
 
-      // Format the data to match the expected output
       const topInstitutions = topInstitutionsData.map(item => ({
-        _id: item.institution,
-        count: item._count.institution
+        name: item.institution,
+        count: item._count.institution,
       }));
 
-      return {
-        totalJobs,
-        jobsWithMotivationLetters,
-        topInstitutions
-      };
+      return { totalJobs, jobsWithMotivationLetters, topInstitutions };
     } catch (error) {
-      console.error('Error getting job stats:', error);
-      throw new Error('Could not retrieve job statistics from the database.');
+      logger.error('Error getting job stats:', error);
+      throw new Error('Could not retrieve job statistics.');
     }
   }
 
+  async cleanupOldJobs(userId, daysOld) {
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - daysOld);
+    const result = await this.prisma.ausbildung.deleteMany({
+      where: { userId, createdAt: { lt: cutoffDate } },
+    });
+    return result.count;
+  }
 }
 
-
-
-module.exports = {
-  DatabaseManager
-};
+export default DatabaseManager;

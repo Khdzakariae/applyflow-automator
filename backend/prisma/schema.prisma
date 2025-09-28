@@ -1,5 +1,4 @@
 // prisma/schema.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -9,6 +8,20 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id           String       @id @default(cuid())
+  firstName    String
+  lastName     String
+  name         String
+  email        String       @unique
+  password     String
+  verified     Boolean      @default(false)
+  ausbildungen Ausbildung[] // One-to-many relation
+  campaigns   EmailCampaign[]
+  documents   Document[]
+  integration UserIntegration?
+}
+
 model Ausbildung {
   id                   String  @id @default(cuid())
   title                String
@@ -16,29 +29,82 @@ model Ausbildung {
   location             String  @default("N/A")
   startDate            String  @default("N/A") @map("start_date")
   vacancies            String  @default("N/A")
-  phones               String // JSON string array
-  url                  String  @unique
+  phones               String
+  url                  String  // Remove @unique to allow same URL for different users
   description          String  @default("N/A")
-  emails               String // JSON string array
-  motivationLetterPath String? @map("motivation_letter_path")
-
-  // --- NEW FIELD ADDED ---
-  status String @default("Pending") // Tracks application status
-
+  emails               String
+  motivationLetter     Bytes?  @map("motivation_letter") // Store as binary data instead of path
+  userId               String  // Make required (not optional)
+  status               String  @default("Pending")
+  source               String  @default("ausbildung") // Add source field for website tracking
+  
+  // Additional fields for azubi.de and enhanced data
+  requirements         String? @default("N/A")
+  salary               String? @default("N/A")
+  benefits             String? @default("N/A")
+  duration             String? @default("N/A")
+  
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade) // Changed to Cascade
+  
+  // Add compound unique constraint to allow same URL for different users
+  @@unique([url, userId])
   @@map("ausbildung")
 }
 
-// --- NEW USER MODEL ADDED ---
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  password  String   // Store hashed passwords, NEVER plain text!
-  name      String?  // Optional name field
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 
-  @@map("users") // Optional: name your table "users"
+
+model EmailCampaign {
+  id          String   @id @default(cuid())
+  name        String
+  userId      String
+  sendType    String   @default("all")
+  jobIds      String?  // Single job ID
+  documentIds String?  // Single document ID
+  totalEmails Int      @default(0)
+  sentCount   Int      @default(0)
+  errorCount  Int      @default(0)
+  status      String   @default("created") // created, sending, completed, completed_with_errors, failed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  completedAt DateTime?
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_campaigns")
+}
+
+model Document {
+  id           String   @id @default(cuid())
+  userId       String
+  filename     String
+  originalName String
+  fileData     Bytes    // Store file as binary data
+  fileSize     Int
+  mimeType     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("documents")
+}
+
+model UserIntegration {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  geminiApiKey String?
+  geminiModel  String?  @default("gemini-1.5-flash")
+  smtpUser     String?
+  smtpPass     String?
+  smtpHost     String?  @default("smtp.gmail.com")
+  smtpPort     Int?     @default(465)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_integrations")
 }

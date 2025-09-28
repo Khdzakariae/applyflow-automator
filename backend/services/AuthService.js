@@ -1,88 +1,103 @@
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { PrismaClient } = require('@prisma/client');
-const config = require('../config'); // Adjust path as needed
-const { logger } = require('../utils'); // Adjust path as needed
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { PrismaClient } from '@prisma/client';
 
-class AuthService {
-  constructor() {
-    this.prisma = new PrismaClient();
-    this.jwtSecret = config.app.jwtSecret;
-    this.tokenExpiresIn = config.app.tokenExpiresIn;
-    if (!this.jwtSecret || this.jwtSecret === 'your_super_secret_jwt_key_here') {
-      logger.warn('JWT_SECRET is not set or is default. Please configure a strong secret in config.js or .env.');
+const prisma = new PrismaClient();
+
+export const signUp = async (req, res) => {
+  console.log("SignUp raw body:", req.body); 
+
+  try {
+    const { firstName, lastName, email, password, ausbildungen } = req.body;
+
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) {
+      return res.status(409).json({ error: 'Email already in use.' });
     }
-  }
 
-  async hashPassword(password) {
-    const salt = await bcrypt.genSalt(10);
-    return bcrypt.hash(password, salt);
-  }
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-  async comparePassword(password, hashedPassword) {
-    return bcrypt.compare(password, hashedPassword);
-  }
+    const newUser = await prisma.user.create({
+      data: {
+        firstName,
+        lastName,
+        email,
+        password: hashedPassword,
+        verified: false,
+        name: `${firstName} ${lastName}`,
+        ausbildungen: ausbildungen
+          ? {
+              create: ausbildungen.map((a) => ({
+                title: a.title,
+                institution: a.institution,
+                location: a.location || 'N/A',
+                startDate: a.startDate || 'N/A',
+                vacancies: a.vacancies || 'N/A',
+                phones: a.phones || '',
+                url: a.url,
+                description: a.description || 'N/A',
+                emails: a.emails || '',
+                motivationLetterPath: a.motivationLetterPath || null,
+              })),
+            }
+          : undefined,
+      },
+      include: { ausbildungen: true },
+    });
 
-  generateToken(userId, email) {
-    return jwt.sign({ userId, email }, this.jwtSecret, { expiresIn: this.tokenExpiresIn });
+    res.status(201).json({
+      message: 'User registered successfully!',
+      data: newUser,
+    });
+  } catch (error) {
+    console.error('Sign up error:', error);
+    res.status(500).json({ error: 'An error occurred during sign up.' });
   }
+};
 
-  verifyToken(token) {
-    try {
-      return jwt.verify(token, this.jwtSecret);
-    } catch (error) {
-      logger.error('JWT verification failed:', error.message);
-      return null;
-    }
-  }
+export const signIn = async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password)
+      return res.status(400).json({ error: 'Email and password are required.' });
 
-  async registerUser(email, password, name = null) {
-    try {
-      const existingUser = await this.prisma.user.findUnique({ where: { email } });
-      if (existingUser) {
-        throw new Error('User with this email already exists.');
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(404).json({ error: 'User not found.' });
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) return res.status(401).json({ error: 'Invalid credentials.' });
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email },
+      process.env.JWT_SECRET || 'secret',
+      { expiresIn: process.env.JWT_EXPIRATION || '7d' }
+    );
+
+    res
+    .cookie('auth', token, {
+      httpOnly: true,
+      secure: false,       // important for localhost
+      sameSite: 'lax',
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    })
+    .status(200)
+    .json({ 
+      message: 'Sign in successful.', 
+      token, 
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name
       }
-
-      const hashedPassword = await this.hashPassword(password);
-      const user = await this.prisma.user.create({
-        data: {
-          email,
-          password: hashedPassword,
-          name,
-        },
-      });
-      logger.success(`User registered: ${user.email}`);
-      return user;
-    } catch (error) {
-      logger.error('Error registering user:', error);
-      throw error;
-    } finally {
-      await this.prisma.$disconnect();
-    }
+    });
+  
+  } catch (error) {
+    console.error('Sign in error:', error);
+    res.status(500).json({ error: 'An error occurred during sign in.' });
   }
+};
 
-  async loginUser(email, password) {
-    try {
-      const user = await this.prisma.user.findUnique({ where: { email } });
-      if (!user) {
-        throw new Error('Invalid credentials.');
-      }
-
-      const isMatch = await this.comparePassword(password, user.password);
-      if (!isMatch) {
-        throw new Error('Invalid credentials.');
-      }
-
-      const token = this.generateToken(user.id, user.email);
-      logger.info(`User logged in: ${user.email}`);
-      return { user: { id: user.id, email: user.email, name: user.name }, token };
-    } catch (error) {
-      logger.error('Error logging in user:', error);
-      throw error;
-    } finally {
-      await this.prisma.$disconnect();
-    }
-  }
-}
-
-module.exports = { AuthService };
+export const signOut = async (req, res) => {
+  res.clearCookie('auth');
+  res.status(200).json({ message: 'Logged out successfully.' });
+};

@@ -1,397 +1,166 @@
-// app.js — API Server Entry Point (fixed)
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const multer = require('multer');
-const nodemailer = require('nodemailer');
-const path = require('path');
-const puppeteer = require('puppeteer');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-const PDFDocument = require('pdfkit');
-const pdf = require('pdf-parse');
-const fs = require('fs');
-const { AuthService } = require('./services/AuthService'); // Adjust path if needed
-const { protect } = require('./middleware/auth');
-const authService = new AuthService();
+import express from "express";
+import cookieParser from "cookie-parser";
+import cors from "cors";
+import PDFDocument from "pdfkit";
+import nodemailer from "nodemailer";
+import PDFParser from "pdf2json";
+import fs from "fs";
+import multer from "multer";
+import path from "path";
+import os from "os";
+import { fileURLToPath } from "url";
+import { PrismaClient } from "@prisma/client";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import authRouter from "./routes/auth.routes.js";
+import addAusbildung from "./routes/ausbildung.routes.js";
+import settingsRouter from "./routes/settings.routes.js";
+import config from "./config.js";
+import DatabaseManager from "./db-utils.js";
+import { authenticateToken, getUserIdFromToken } from "./middleware/auth.js";
 
-const config = require('./config');
-const { DatabaseManager } = require('./db-utils');
-const {
+
+const prisma = new PrismaClient();
+
+import {
   logger,
   FileManager,
-  ValidationHelper,
   RetryHelper,
-  DateHelper,
-  TextProcessor,
-  ErrorHandler
-} = require('./utils');
+  SimpleProgressTracker,
+} from "./utils.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const app = express();
-app.use(cors());
+
+
+function createTransporter({ smtpHost, smtpPort, smtpUser, smtpPass }) {
+  const port = Number(smtpPort ?? 587);
+  return nodemailer.createTransport({
+    host: smtpHost || "smtp.gmail.com",
+    port,
+    secure: port === 465,
+    auth: {
+      user: smtpUser,
+      pass: smtpPass,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+  });
+}
+
+const clientOrigins = process.env.CLIENT_ORIGIN || "http://localhost:8080";
+const allowedOriginSet = new Set(
+  clientOrigins
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
+const serverPort = Number(process.env.PORT || config.app.port || 3000);
+allowedOriginSet.add(`http://localhost:${serverPort}`);
+allowedOriginSet.add(`http://127.0.0.1:${serverPort}`);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOriginSet.has(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
 
-// --- make logger.debug safe even if utils/logger doesn't provide it ---
-if (typeof logger.debug !== 'function') {
-  logger.debug = (...args) => logger.info(...args);
-}
 
-// --- Simple progress tracker (replaces ProgressTracker) ---
-class SimpleProgressTracker {
-  constructor(total, description = 'Progress') {
-    this.total = total || 0;
-    this.current = 0;
-    this.description = description;
-    this.start = Date.now();
-  }
-  increment() {
-    this.current++;
-    const pct = this.total ? Math.round((this.current / this.total) * 100) : 0;
-    const sec = Math.round((Date.now() - this.start) / 1000);
-    logger.info(`📊 ${this.description}: ${this.current}/${this.total} (${pct}%) — ${sec}s`);
-  }
-  complete() {
-    const sec = Math.round((Date.now() - this.start) / 1000);
-    logger.success(`✅ ${this.description} completed: ${this.current}/${this.total} in ${sec}s`);
-  }
-}
+ 
 
-class AusbildungScraperAdvanced {
-  constructor(searchTerm, location = '') {
-    this.searchTerm = encodeURIComponent(searchTerm);
-    this.location = encodeURIComponent(location);
-    this.baseUrl = config.scraping.baseUrl;
-    this.browser = null;
-    this.page = null;
-    this.processedUrls = new Set();
-    this.errors = [];
-    this.dbManager = new DatabaseManager();
-    // fire-and-forget is fine (dirs not critical for scraping)
-    this.initializeDirectories();
-  }
 
-  async initializeDirectories() {
-    const directories = Object.values(config.paths);
-    for (const dir of directories) {
-      await FileManager.ensureDirectory(dir);
+const runtimeDirectories = [
+  config.paths.outputDir,
+  config.paths.tempDir,
+  config.paths.logsDir,
+  config.paths.exportsDir,
+  config.paths.cvUploadsDir,
+  path.resolve(__dirname, "uploads"),
+];
+
+runtimeDirectories.forEach((dir) => {
+  FileManager.ensureDirectory(dir);
+});
+
+// Configure Multer for in-memory file storage
+const storage = multer.memoryStorage(); // Store files in memory instead of disk
+
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    // Allow only PDF files for CVs and documents
+    const allowedMimeTypes = [
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+    
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only PDF, DOC, and DOCX files are allowed.'), false);
     }
   }
+});
 
-  async initializeBrowser() {
-    logger.info('🚀 Initializing browser...');
-    try {
-      // ensure robust defaults
-      const launchOpts = {
-        ...config.scraping.puppeteerOptions,
-        args: [
-          ...(config.scraping.puppeteerOptions?.args || []),
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage'
-        ]
-      };
-      this.browser = await puppeteer.launch(launchOpts);
-      this.page = await this.browser.newPage();
-
-      if (config.scraping.userAgent) {
-        await this.page.setUserAgent(config.scraping.userAgent);
-      }
-      if (config.scraping.puppeteerOptions?.defaultViewport) {
-        await this.page.setViewport(config.scraping.puppeteerOptions.defaultViewport);
-      }
-
-      await this.page.setRequestInterception(true);
-      this.page.on('request', (req) => {
-        const type = req.resourceType();
-        if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
-          req.abort();
-        } else {
-          req.continue();
-        }
-      });
-      logger.success('Browser initialized successfully');
-      return true;
-    } catch (error) {
-      logger.error('Failed to initialize browser:', { error: error.message });
-      throw error;
-    }
-  }
-
-  async extractFieldWithSelectors(selectors, labelTexts = [], debugName = null) {
-    try {
-      for (const selector of selectors) {
-        try {
-          const text = await this.page.$eval(selector, el => el.textContent?.trim());
-          if (text) return ValidationHelper.sanitizeString(text);
-        } catch (_) { /* keep trying */ }
-      }
-      for (const label of labelTexts) {
-        try {
-          const xpath = `//dt[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${label.toLowerCase()}')]/following-sibling::dd[1]`;
-          const nodes = await this.page.$x(xpath);
-          if (nodes.length > 0) {
-            const text = await this.page.evaluate(el => el.textContent?.trim(), nodes[0]);
-            if (text) return ValidationHelper.sanitizeString(text);
-          }
-        } catch (_) { /* keep trying */ }
-      }
-      return 'N/A';
-    } catch (error) {
-      logger.error(`Error extracting field${debugName ? ` (${debugName})` : ''}:`, { error: error.message });
-      return 'N/A';
-    }
-  }
-
-  async scrapeJobDetails(url) {
-    return await RetryHelper.withRetry(async () => {
-      logger.info(`Processing: ${url}`);
-      try {
-        await this.page.goto(url, { waitUntil: 'networkidle2', timeout: config.scraping.requestTimeout });
-
-        const title = await this.page.$eval('h1', el => el.textContent?.trim()).catch(() => 'N/A');
-
-
-        // institution via multiple selectors + URL inference fallback
-        let institution = 'N/A';
-        const instSelectors = [
-          'h4[data-testid="jp-customer"]',
-          '.company-name',
-          '[itemprop="hiringOrganization"]'
-        ];
-        for (const selector of instSelectors) {
-          try {
-            institution = await this.page.$eval(selector, el => {
-              const text = el.textContent?.trim() || '';
-              return text.toLowerCase().startsWith('bei ') ? text.substring(4) : text;
-            });
-            if (institution && institution !== 'N/A') break;
-          } catch (_) {}
-        }
-        if (institution === 'N/A' || institution.length < 2) {
-          const urlMatch = url.match(/bei-(.*?)-in-/);
-          if (urlMatch) {
-            institution = urlMatch[1]
-              .replace(/-/g, ' ')
-              .replace(/\b\w/g, l => l.toUpperCase());
-          }
-        }
-
-        // location
-        const location = await this.extractFieldWithSelectors(
-          ['[data-testid="jp-branches"]', '.company-address', '.job-location', '[class*="location"]', '[class*="address"]', '[class*="standort"]'],
-          ['Standort', 'Standorte', 'Ort', 'Adresse'],
-          'location'
-        );
-
-        // start date + regex fallback
-        let startDate = await this.extractFieldWithSelectors(
-          ['[data-testid="jp-starting-at"]', '.jp-starting-at', '.start-date', '[class*="start"]', '[class*="begin"]'],
-          ['Beginn', 'Ausbildungsbeginn', 'Start', 'Startdatum'],
-          'startDate'
-        );
-
-        if (startDate === 'N/A') {
-          logger.info('Start date not found with selectors, trying full-text regex fallback...');
-          const plainText = await this.page.evaluate(() => document.body.innerText);
-          const datePatterns = [
-            /(?:beginn|start|ab)\s*:?\s*(\d{1,2}\.\d{1,2}\.(?:\d{4}|\d{2}))/i,
-            /(?:ausbildungsbeginn)\s*:?\s*(\d{1,2}\.\d{1,2}\.(?:\d{4}|\d{2}))/i,
-            /\b(\d{1,2}\.\d{1,2}\.(?:2024|2025|2026|2027))\b/
-          ];
-          for (const pattern of datePatterns) {
-            const match = plainText.match(pattern);
-            if (match && match[1]) {
-              startDate = match[1];
-              logger.info(`Found start date with regex: ${startDate}`);
-              break;
-            }
-          }
-        }
-
-        // vacancies + regex fallback
-        let vacancies = await this.extractFieldWithSelectors(
-          ['[data-testid="jp-vacancies"]', '.vacancies', '.job-vacancies', '[class*="platz"]', '[class*="vacan"]'],
-          ['Freie Plätze', 'Plätze', 'Anzahl', 'Stellen'],
-          'vacancies'
-        );
-
-        if (vacancies === 'N/A') {
-          logger.info('Vacancies not found with selectors, trying full-text regex fallback...');
-          const plainText = await this.page.evaluate(() => document.body.innerText);
-          const vacancyMatch = plainText.match(/(\d+)\s*(?:freie?\s*)?(?:plätze?|stelle[n]?)/i);
-          if (vacancyMatch && vacancyMatch[1]) {
-            vacancies = vacancyMatch[1];
-            logger.info(`Found vacancies with regex: ${vacancies}`);
-          }
-        }
-
-        // description + contacts
-        const pageContent = await this.page.content();
-        const description = TextProcessor.truncateText(TextProcessor.cleanHTML(pageContent), 1000);
-        const emails = TextProcessor.extractEmails(pageContent) || [];
-        const phones = TextProcessor.extractPhoneNumbers(pageContent) || [];
-
-        const jobData = {
-          title,
-          institution,
-          location,
-          start_date: startDate,     // keep snake_case for DB
-          vacancies,
-          description,
-          emails,
-          phones,
-          url
-        };
-
-        const validation = ValidationHelper.validateJobData(jobData);
-        if (!validation.isValid) {
-          logger.warn(`Invalid job data for ${url}:`, { errors: validation.errors });
-          return null;
-        }
-
-        logger.success(`Scraped: [Titel: ${jobData.title}] [Firma: ${jobData.institution}] [Start: ${jobData.start_date}] [Plätze: ${jobData.vacancies}]`);
-        return ValidationHelper.sanitizeJobData(jobData);
-
-      } catch (error) {
-        ErrorHandler.handleScrapingError(error, url);
-        throw error;
-      }
-    }, config.scraping.maxRetries);
-  }
-
-  async saveToDatabase(jobData) {
-    try {
-      const existingJob = await this.dbManager.findJobByUrl(jobData.url);
-      if (existingJob) {
-        await this.dbManager.updateJobByUrl(jobData.url, jobData);
-        logger.info(`Updated existing job: ${jobData.title}`);
-      } else {
-        await this.dbManager.createJob(jobData);
-        logger.success(`Saved new job: ${jobData.title}`);
-      }
-    } catch (error) {
-      ErrorHandler.handleDatabaseError(error, 'save job');
-    }
-  }
-
-  async startScraping(numPages = 3) {
-    logger.info('🕷️  Starting scraping process...');
-    let totalResults = 0;
-    try {
-      await this.initializeBrowser();
-      await this.dbManager.connect();
-
-      const progress = new SimpleProgressTracker(numPages, 'Scraping pages');
-
-      for (let page = 1; page <= numPages; page++) {
-        logger.info(`\n📄 Processing page ${page}/${numPages}`);
-        const searchUrl = `${this.baseUrl}?search=${this.searchTerm}&location=${this.location}&page=${page}`;
-        try {
-          await this.page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: config.scraping.requestTimeout });
-          await this.page.waitForSelector("a[href^='/stellen/']", { timeout: config.scraping.requestTimeout });
-          const jobUrls = await this.page.$$eval("a[href^='/stellen/']", links =>
-            [...new Set(links.map(link => link.href))]
-          );
-          logger.info(`Found ${jobUrls.length} job listings on page ${page}`);
-          if (jobUrls.length === 0) break;
-
-          let pageResults = 0;
-          for (const jobUrl of jobUrls) {
-            if (this.processedUrls.has(jobUrl)) continue;
-            this.processedUrls.add(jobUrl);
-
-            try {
-              const jobData = await this.scrapeJobDetails(jobUrl);
-              if (jobData && jobData.emails && jobData.emails.length > 0) {
-                await this.saveToDatabase(jobData);
-                totalResults++;
-                pageResults++;
-              } else if (jobData) {
-                logger.warn(`⏭️  Skipping job (no email found): ${jobData.title}`);
-              }
-            } catch (error) {
-              logger.error(`Failed to process job: ${jobUrl}`, { error: error.message });
-              this.errors.push({ url: jobUrl, error: error.message });
-            }
-            await RetryHelper.sleep(config.scraping.delayBetweenRequests);
-          }
-          logger.info(`📈 Page ${page} results: ${pageResults} jobs saved with emails`);
-        } catch (error) {
-          logger.error(`Error processing page ${page}:`, { error: error.message });
-          this.errors.push({ page, error: error.message });
-        }
-        progress.increment();
-        if (page < numPages) await RetryHelper.sleep(config.scraping.delayBetweenPages);
-      }
-
-      progress.complete();
-      logger.success(`✅ Scraping completed successfully!`);
-      logger.info(`📊 Final Results:\n   • Total jobs saved with email: ${totalResults}\n   • Total URLs processed: ${this.processedUrls.size}\n   • Total errors encountered: ${this.errors.length}`);
-      if (this.errors.length > 0) {
-        logger.warn(`❗ Errors summary:`);
-        this.errors.slice(0, 5).forEach((e, i) => {
-          logger.warn(`   ${i + 1}. ${e.url || `Page ${e.page}`}: ${e.error}`);
-        });
-        if (this.errors.length > 5) {
-          logger.warn(`   ... and ${this.errors.length - 5} more errors`);
-        }
-      }
-    } catch (error) {
-      logger.error('Critical scraping error:', { error: error.message, stack: error.stack });
-      throw error;
-    } finally {
-      await this.cleanup();
-    }
-    return totalResults;
-  }
-
-  async cleanup() {
-    try {
-      if (this.browser) {
-        await this.browser.close();
-        logger.info('Browser closed successfully');
-      }
-      await this.dbManager.disconnect();
-      logger.info('Database connection closed successfully');
-    } catch (error) {
-      logger.error('Error during cleanup:', { error: error.message });
-    }
-  }
-}
-
-// ----------------------
-// Letter Generator
-// ----------------------
 class AdvancedMotivationLetterGenerator {
-  constructor() {
-    this.apiKey = config.apis.geminiApiKey;
-    if (!this.apiKey || this.apiKey === 'YOUR_GEMINI_API_KEY_HERE') {
-      throw new Error('Missing Gemini API key.');
+  constructor({ apiKey, model, dbManager, userId }) {
+    if (!apiKey) {
+      throw new Error("Missing Gemini API key for this user.");
     }
+
+    this.apiKey = apiKey;
+    this.modelName = model || config.apis.geminiModel;
     this.genAI = new GoogleGenerativeAI(this.apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: config.apis.geminiModel });
-    this.dbManager = new DatabaseManager();
+    this.model = this.genAI.getGenerativeModel({ model: this.modelName });
+    this.dbManager = dbManager || new DatabaseManager();
+    this.manageConnection = !dbManager;
+    this.userId = userId;
   }
 
   async generateAllMotivationLetters(cvPath) {
-    logger.info('📝 Starting motivation letter generation...');
+    if (!this.userId) {
+      throw new Error("Missing user context for letter generation.");
+    }
+
+    logger.info("📝 Starting motivation letter generation...");
     let successCount = 0;
+    const shouldDisconnect = this.manageConnection;
+
     try {
-      await FileManager.ensureDirectory(config.paths.outputDir);
       const cvText = await this.extractCVText(cvPath);
-      await this.dbManager.connect();
-      const jobs = await this.dbManager.findJobsWithoutMotivationLetter();
+      if (shouldDisconnect) {
+        await this.dbManager.connect();
+      }
+      const jobs = await this.dbManager.findJobsWithoutMotivationLetter(this.userId);
       logger.info(`📊 Found ${jobs.length} jobs that need letters.`);
-      const progress = new SimpleProgressTracker(jobs.length, 'Generating motivation letters');
+      const progress = new SimpleProgressTracker(jobs.length, "Generating motivation letters");
 
       for (const job of jobs) {
         try {
           const letterText = await this.generateLetterText(job, cvText);
-          const filename = `Bewerbung_${FileManager.cleanFilename(job.institution)}_${job.id}.pdf`;
-          const filepath = path.join(config.paths.outputDir, filename);
-          await this.createPDF(letterText, filepath, job.title, job.institution);
-          await this.dbManager.updateMotivationLetterPath(job.id, filepath);
-          await this.dbManager.updateJobStatus(job.id, 'Ready to Send');
+          
+          // Create PDF in memory instead of writing to file
+          const pdfBuffer = await this.createPDFBuffer(letterText, job.title, job.institution);
+          
+          // Store PDF directly in database
+          await this.dbManager.updateMotivationLetterData(job.id, pdfBuffer);
+          await this.dbManager.updateJobStatus(job.id, "Ready to Send");
+          
           logger.success(`✅ Letter created for ${job.institution}`);
           successCount++;
         } catch (error) {
@@ -402,23 +171,29 @@ class AdvancedMotivationLetterGenerator {
       }
       progress.complete();
     } catch (error) {
-      logger.error('Critical error during letter generation:', { error: error.message, stack: error.stack });
+      logger.error("Critical error during letter generation:", { error: error.message, stack: error.stack });
     } finally {
-      await this.dbManager.disconnect();
-      logger.info('Letter generation process finished.');
+      if (shouldDisconnect) {
+        await this.dbManager.disconnect();
+      }
+      logger.info("Letter generation process finished.");
     }
     return successCount;
   }
 
   async extractCVText(cvPath) {
     try {
-      if (!await FileManager.fileExists(cvPath)) {
+      if (!(await FileManager.fileExists(cvPath))) {
         throw new Error(`CV file not found at path: ${cvPath}`);
       }
-      const dataBuffer = fs.readFileSync(cvPath);
-      const data = await pdf(dataBuffer);
-      logger.success(`CV parsed successfully. Character count: ${data.text.trim().length}`);
-      return data.text.trim();
+      const pdfText = await new Promise((resolve, reject) => {
+        const pdfParser = new PDFParser(this, 1);
+        pdfParser.on("pdfParser_dataError", (errData) => reject(new Error(errData.parserError)));
+        pdfParser.on("pdfParser_dataReady", () => resolve(pdfParser.getRawTextContent().trim()));
+        pdfParser.loadPDF(cvPath);
+      });
+      logger.success(`CV parsed successfully. Character count: ${pdfText.length}`);
+      return pdfText;
     } catch (error) {
       logger.error(`Failed during CV extraction: ${error.message}`);
       throw new Error(`Failed to read or parse the PDF file. Details: ${error.message}`);
@@ -427,9 +202,8 @@ class AdvancedMotivationLetterGenerator {
 
   async generateLetterText(jobInfo, cvText) {
     return await RetryHelper.withRetry(async () => {
-      // FIX: DB field is start_date, not startDate
-      const { title, institution, description, location, start_date } = jobInfo;
-      const context = `Ausbildungsposition: ${title}\nStandort: ${location}\nAusbildungsbeginn: ${start_date || 'N.N.'}`;
+      const { title, institution, description, location, startDate } = jobInfo;
+      const context = `Ausbildungsposition: ${title}\nStandort: ${location}\nAusbildungsbeginn: ${startDate || "N.N."}`;
       const prompt =
         `Ich bewerbe mich um eine Ausbildung bei "${institution}".\n\n` +
         `Stellenausschreibung:\n${context}\n\n` +
@@ -443,232 +217,812 @@ class AdvancedMotivationLetterGenerator {
     });
   }
 
-  async createPDF(letterText, filename, jobTitle, company) {
+  createPDF(letterText, filename, jobTitle, company) {
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({ margins: config.pdf.pageMargins });
       const stream = fs.createWriteStream(filename);
       doc.pipe(stream);
-      doc.fontSize(14).font('Helvetica-Bold').text(`Bewerbung: ${jobTitle}`, { align: 'center' });
-      doc.fontSize(12).font('Helvetica').text(`bei ${company}`, { align: 'center' }).moveDown(2);
+      doc.fontSize(14).font("Helvetica-Bold").text(`Bewerbung: ${jobTitle}`, { align: "center" });
+      doc.fontSize(12).font("Helvetica").text(`bei ${company}`, { align: "center" }).moveDown(2);
       doc.fontSize(config.pdf.fontSize).font(config.pdf.fontFamily);
-      letterText.split('\n').forEach(line => doc.text(line, { align: 'left' }));
+      letterText.split("\n").forEach((line) => doc.text(line, { align: "left" }));
       doc.end();
-      stream.on('finish', resolve);
-      stream.on('error', reject);
+      stream.on("finish", resolve);
+      stream.on("error", reject);
+    });
+  }
+
+  createPDFBuffer(letterText, jobTitle, company) {
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({ margins: config.pdf.pageMargins });
+      const buffers = [];
+      
+      // Collect PDF data in memory
+      doc.on('data', (chunk) => buffers.push(chunk));
+      doc.on('end', () => {
+        const pdfBuffer = Buffer.concat(buffers);
+        resolve(pdfBuffer);
+      });
+      doc.on('error', reject);
+      
+      // Generate PDF content
+      doc.fontSize(14).font("Helvetica-Bold").text(`Bewerbung: ${jobTitle}`, { align: "center" });
+      doc.fontSize(12).font("Helvetica").text(`bei ${company}`, { align: "center" }).moveDown(2);
+      doc.fontSize(config.pdf.fontSize).font(config.pdf.fontFamily);
+      letterText.split("\n").forEach((line) => doc.text(line, { align: "left" }));
+      doc.end();
     });
   }
 }
 
-// ----------------------
-// Email Sender
-// ----------------------
-class EmailSender {
-  constructor() {
-    // FIX: createTransport, not createTransporter
-    this.transporter = nodemailer.createTransport(config.email.smtp);
-    this.dbManager = new DatabaseManager();
+app.post("/api/ausbildung/generate-letters", upload.any(), async (req, res) => {
+  const userId = getUserIdFromToken(req);
+
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
   }
 
-  async sendApplicationEmail({ jobId, userName, userEmail }) {
-    await this.dbManager.connect();
-    try {
-      const job = await this.dbManager.findJobById(jobId);
-      if (!job) throw new Error(`Job with ID ${jobId} not found.`);
-      if (!job.motivationLetterPath) throw new Error(`Motivation letter for job ${jobId} not generated.`);
-      if (!job.emails || job.emails.length === 0) throw new Error(`No recipient email for job ${jobId}.`);
+  console.log("📝 Generate letters request:", {
+    files: req.files?.length || 0,
+    body: req.body,
+    useExistingCv: req.body.useExistingCv,
+    existingCvId: req.body.existingCvId,
+  });
 
-      const mailOptions = {
-        from: config.email.fromAddress,
-        to: job.emails.join(', '),
-        subject: `Bewerbung: ${job.title} - ${userName}`,
-        html: `<p>Sehr geehrte Damen und Herren,</p>
-               <p>anbei übersende ich Ihnen meine Bewerbungsunterlagen für die Ausbildungsstelle als <strong>${job.title}</strong>.</p>
-               <p>Mit freundlichen Grüßen,</p>
-               <p><strong>${userName}</strong><br><i>${userEmail}</i></p>`,
-        attachments: [{ filename: `Bewerbung_${userName}.pdf`, path: job.motivationLetterPath }]
-      };
-      const info = await this.transporter.sendMail(mailOptions);
-      await this.dbManager.updateJobStatus(jobId, 'Applied');
-      logger.success(`Email sent to ${mailOptions.to}. Message ID: ${info.messageId}`);
-      return { success: true, messageId: info.messageId };
-    } finally {
-      await this.dbManager.disconnect();
+  const dbManager = new DatabaseManager();
+  let tempFilePath = null;
+
+  try {
+    await dbManager.connect();
+
+    const integration = await dbManager.getUserIntegration(userId);
+    if (!integration?.geminiApiKey) {
+      return res.status(400).json({
+        error: "Missing Gemini API key. Please configure it in your settings before generating letters.",
+      });
     }
-  }
-}
 
-// --- MULTER SETUP ---
-FileManager.ensureDirectory(config.paths.cvUploadsDir);
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, config.paths.cvUploadsDir),
-  filename: (req, file, cb) => cb(null, `cv-${Date.now()}${path.extname(file.originalname)}`)
-});
-const upload = multer({ storage });
-
-// --- API ENDPOINTS ---
-app.get('/', (req, res) => res.send('Ausbildung Scraper API is running!'));
-
-app.post('/api/auth/signup', async (req, res) => {
-  const { email, password, name } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required.' });
-  }
-
-  try {
-    const user = await authService.registerUser(email, password, name);
-
-    // Log in immediately after signup
-    const { token } = await authService.loginUser(email, password);
-
-    // Store token in HTTP-only cookie
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000 // 1 day
+    const existingCVs = await dbManager.prisma.document.findMany({
+      where: {
+        userId,
+        OR: [
+          { originalName: { contains: "cv" } },
+          { originalName: { contains: "lebenslauf" } },
+          { originalName: { contains: "CV" } },
+          { originalName: { contains: "Lebenslauf" } },
+          { originalName: { endsWith: ".pdf" } },
+        ],
+      },
+      select: {
+        id: true,
+        filename: true,
+        originalName: true,
+        fileSize: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: "desc" },
     });
 
-    res.status(201).json({
-      message: 'User registered successfully!',
-      user: { id: user.id, email: user.email, name: user.name },
-      success: true
+    let cvData = null;
+    let cvSource = "uploaded";
+
+    // Check if a new CV is uploaded (files array will contain the cv file)
+    const uploadedFile = req.files?.find((file) => file.fieldname === "cv");
+
+    if (uploadedFile?.buffer) {
+      await dbManager.saveDocument(userId, uploadedFile);
+      cvData = uploadedFile.buffer;
+      cvSource = "uploaded";
+      console.log("🔍 Using uploaded CV:", uploadedFile.originalname);
+    } else if (req.body.useExistingCv && req.body.existingCvId) {
+      const existingCV = await dbManager.getDocumentWithData(req.body.existingCvId, userId);
+
+      if (!existingCV) {
+        return res.status(404).json({
+          error: "Selected CV not found or access denied.",
+          existingCVs,
+        });
+      }
+
+      cvData = existingCV.fileData;
+      cvSource = "existing";
+      console.log("🔍 Using existing CV:", existingCV.originalName);
+    } else {
+      return res.status(400).json({
+        error: "CV file upload is required or select an existing CV.",
+        existingCVs,
+      });
+    }
+
+    if (cvData) {
+      tempFilePath = path.join(os.tmpdir(), `temp_cv_${Date.now()}.pdf`);
+      await fs.promises.writeFile(tempFilePath, cvData);
+    }
+
+    const generator = new AdvancedMotivationLetterGenerator({
+      apiKey: integration.geminiApiKey,
+      model: integration.geminiModel,
+      dbManager,
+      userId,
     });
-  } catch (error) {
-    logger.error('Signup API Error:', { error: error.message, stack: error.stack });
-    res.status(400).json({ error: error.message, success: false });
-  }
-});
 
-app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
+    const generatedCount = await generator.generateAllMotivationLetters(tempFilePath);
 
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password are required.' });
-  }
-
-  try {
-    const { user, token } = await authService.loginUser(email, password);
-
-    // Store token in HTTP-only cookie
-    res.cookie("token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000 // 1 day
-    });
+    if (tempFilePath && (await fs.promises.access(tempFilePath).then(() => true).catch(() => false))) {
+      await fs.promises.unlink(tempFilePath);
+    }
 
     res.status(200).json({
-      message: 'Logged in successfully!',
-      user,
-      success: true
+      message: "Letter generation completed successfully.",
+      generatedCount,
+      cvSource,
+      success: true,
     });
   } catch (error) {
-    logger.error('Login API Error:', { error: error.message, stack: error.stack });
-    res.status(401).json({ error: error.message, success: false });
+    if (tempFilePath) {
+      try {
+        await fs.promises.unlink(tempFilePath);
+      } catch (unlinkError) {
+        console.warn("Could not clean up temporary file:", unlinkError.message);
+      }
+    }
+
+    logger.error("API Letter Generation Error:", { error: error.message, stack: error.stack });
+    res.status(500).json({
+      error: "Letter generation failed.",
+      details: error.message,
+      success: false,
+    });
+  } finally {
+    await dbManager.disconnect();
   }
 });
 
-
-app.post('/api/auth/logout', (req, res) => {
-  res.clearCookie("token");
-  logger.info('User logged out (cookie cleared).');
-  res.status(200).json({ message: 'Logged out successfully.', success: true });
-});
-
-
-app.post('/api/scrape', async (req, res) => {
-  const { searchTerm, location, numPages } = req.body;
-  if (!searchTerm) return res.status(400).json({ error: 'searchTerm is required.' });
-  try {
-    const scraper = new AusbildungScraperAdvanced(searchTerm, location);
-    const savedJobs = await scraper.startScraping(Number(numPages) || 3);
-    res.status(200).json({ message: 'Scraping completed successfully.', savedJobs, success: true });
-  } catch (error) {
-    logger.error('API Scraping Error:', { error: error.message, stack: error.stack });
-    res.status(500).json({ error: 'Scraping failed.', details: error.message, success: false });
-  }
-});
-
-app.post('/api/generate-letters', upload.single('cv'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'CV file upload is required.' });
-  try {
-    const generator = new AdvancedMotivationLetterGenerator();
-    const generatedCount = await generator.generateAllMotivationLetters(req.file.path);
-    res.status(200).json({ message: 'Letter generation completed successfully.', generatedCount, success: true });
-  } catch (error) {
-    logger.error('API Letter Generation Error:', { error: error.message, stack: error.stack });
-    res.status(500).json({ error: 'Letter generation failed.', details: error.message, success: false });
-  }
-});
-
-app.post('/api/send-email', async (req, res) => {
-  const { jobId, userName, userEmail } = req.body;
-  if (!jobId || !userName || !userEmail) {
-    return res.status(400).json({ error: 'jobId, userName, and userEmail are required.' });
-  }
-  try {
-    const emailSender = new EmailSender();
-    const result = await emailSender.sendApplicationEmail({ jobId, userName, userEmail });
-    res.status(200).json({ message: 'Email sent successfully!', ...result, success: true });
-  } catch (error) {
-    logger.error('API Email Sending Error:', { error: error.message, stack: error.stack });
-    res.status(500).json({ error: 'Failed to send email.', details: error.message, success: false });
-  }
-});
-
-
-app.get('/api/jobs', async (req, res) => {
+app.get("/api/ausbildung/documents", async (req, res) => {
   const dbManager = new DatabaseManager();
+  
   try {
-      await dbManager.connect();
-      const jobs = await dbManager.findAllJobs();
+    await dbManager.connect();
+    
+    const userId = getUserIdFromToken(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
 
-      // 🔑 Normalize job fields for frontend
-      const formattedJobs = jobs.map(job => ({
-          id: job.id,
-          title: job.title || "N/A",
-          institution: job.institution || "N/A",
-          location: job.location || "N/A",
-          startDate: job.startDate || "N/A",   // rename for frontend
-          url: job.url,
-          motivationLetterPath: job.motivationLetterPath || null,
-          emailSent: job.status === 'Applied', // frontend expects boolean
-          status: job.status || "Pending"      // optional explicit field
+    const documents = await dbManager.getUserDocuments(userId);
+    
+    res.status(200).json(documents);
+  } catch (error) {
+    logger.error("Failed to fetch documents:", { error: error.message, stack: error.stack });
+    res.status(500).json({ 
+      error: "Failed to fetch documents.", 
+      details: error.message 
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+app.post("/api/ausbildung/documents/upload", upload.single("file"), async (req, res) => {
+    
+  // 1. Instantiate the DatabaseManager inside the route handler
+  const dbManager = new DatabaseManager(); 
+  
+  try {
+    // 2. Connect to the database
+    await dbManager.connect(); 
+
+    // 3. Extract userId with debugging
+    const userId = getUserIdFromToken(req);
+    console.log('🔍 DEBUG - Raw userId:', userId);
+    console.log('🔍 DEBUG - typeof userId:', typeof userId);
+    console.log('🔍 DEBUG - userId stringified:', JSON.stringify(userId));
+    
+    if (!userId || typeof userId !== 'string') {
+      console.log('❌ Invalid userId detected:', { userId, type: typeof userId });
+      return res.status(401).json({ 
+        error: "Unauthorized: Invalid User ID in token.",
+        debug: { userId, type: typeof userId }
+      });
+    }
+
+    // Handle file upload
+    const file = req.file;
+    if (!file || !file.buffer) {
+      return res.status(400).json({ error: "No file was uploaded or file data is missing." });
+    }
+    
+    console.log('🔍 DEBUG - File info:', {
+      originalname: file.originalname,
+      mimetype: file.mimetype,
+      size: file.size,
+      bufferLength: file.buffer.length
+    });
+    
+    // 4. File validation is now handled by multer filter
+    
+    // 5. Save to database with binary data
+    console.log('🔍 DEBUG - About to save document with userId:', userId);
+    const savedDoc = await dbManager.saveDocument(String(userId), file);
+
+    res.status(200).json({
+      success: true,
+      message: "Document uploaded and saved successfully.",
+      document: {
+        id: savedDoc.id,
+        filename: savedDoc.filename,
+        originalName: savedDoc.originalName,
+        mimeType: savedDoc.mimeType,
+        fileSize: savedDoc.fileSize,
+        createdAt: savedDoc.createdAt
+      },
+    });
+
+  } catch (err) {
+    logger.error("File upload DB save error:", { 
+      error: err.message, 
+      stack: err.stack,
+      userId: getUserIdFromToken(req)
+    });
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to save the document.",
+      details: err.message
+    });
+  } finally {
+    // 3. Always ensure the database connection is closed
+    await dbManager.disconnect(); 
+  }
+}
+);
+
+// Download file from database
+app.get("/api/ausbildung/documents/:documentId/download", async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = getUserIdFromToken(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
+    
+    const { documentId } = req.params;
+    
+    // Get document with file data
+    const document = await dbManager.getDocumentWithData(documentId, userId);
+    
+    if (!document) {
+      return res.status(404).json({ error: "Document not found or access denied." });
+    }
+    
+    // Set appropriate headers
+    res.setHeader('Content-Type', document.mimeType);
+    res.setHeader('Content-Disposition', `attachment; filename="${document.originalName}"`);
+    res.setHeader('Content-Length', document.fileSize);
+    
+    // Send the file data
+    res.send(document.fileData);
+    
+  } catch (error) {
+    logger.error("File download error:", { error: error.message, stack: error.stack });
+    res.status(500).json({ 
+      error: "Failed to download document.", 
+      details: error.message 
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+app.delete("/api/ausbildung/documents/:documentId", async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = getUserIdFromToken(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
+
+    const { documentId } = req.params;
+    if (!documentId) {
+      return res.status(400).json({ error: "Document ID is required." });
+    }
+
+    const deletedDocument = await dbManager.deleteDocument(documentId, userId);
+    
+    res.status(200).json({
+      success: true,
+      message: "Document deleted successfully.",
+      document: deletedDocument
+    });
+    
+  } catch (error) {
+    logger.error("Document deletion error:", { error: error.message, stack: error.stack });
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to delete document.",
+      details: error.message
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+// Download motivation letter for a specific job
+app.get("/api/ausbildung/jobs/:jobId/motivation-letter", async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = getUserIdFromToken(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
+    
+    const { jobId } = req.params;
+    
+    // Get job with motivation letter
+    const job = await dbManager.prisma.ausbildung.findFirst({
+      where: { 
+        id: jobId,
+        userId: userId
+      },
+      select: {
+        id: true,
+        title: true,
+        institution: true,
+        motivationLetter: true
+      }
+    });
+    
+    if (!job || !job.motivationLetter) {
+      return res.status(404).json({ error: "Motivation letter not found for this job." });
+    }
+    
+    const filename = `Bewerbung_${job.institution.replace(/[^a-zA-Z0-9]/g, '_')}_${job.id}.pdf`;
+    
+    // Set appropriate headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', job.motivationLetter.length);
+    
+    // Send the PDF data
+    res.send(job.motivationLetter);
+    
+  } catch (error) {
+    logger.error("Motivation letter download error:", { error: error.message, stack: error.stack });
+    res.status(500).json({ 
+      error: "Failed to download motivation letter.", 
+      details: error.message 
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+app.get("/api/ausbildung/documents/:documentId/download", async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = getUserIdFromToken(req);
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
+
+    const { documentId } = req.params;
+    const document = await dbManager.prisma.document.findFirst({
+      where: { id: documentId, userId }
+    });
+
+    if (!document) {
+      return res.status(404).json({ error: "Document not found." });
+    }
+
+    if (!fs.existsSync(document.filePath)) {
+      return res.status(404).json({ error: "File not found on server." });
+    }
+
+    res.setHeader('Content-Disposition', `attachment; filename="${document.originalName}"`);
+    res.setHeader('Content-Type', document.mimeType);
+    
+    const fileStream = fs.createReadStream(document.filePath);
+    fileStream.pipe(res);
+    
+  } catch (error) {
+    logger.error("Document download error:", { error: error.message, stack: error.stack });
+    res.status(500).json({ 
+      error: "Failed to download document.",
+      details: error.message
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+  
+app.post("/api/ausbildung/email/send", async (req, res) => {
+  console.log("🔍 DEBUG - Incoming request headers:", req.headers);
+  console.log("🔍 DEBUG - Request body:", req.body);
+
+  const userId = getUserIdFromToken(req);
+  
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+  }
+
+  // Get selected emails and files from request body
+  const { selectedEmails = [], selectedFiles = [], jobIds = [] } = req.body;
+  console.log("🔍 Selected emails:", selectedEmails);
+  console.log("🔍 Selected files:", selectedFiles);
+  console.log("🔍 Job IDs:", jobIds);
+
+  const dbManager = new DatabaseManager();
+  let integration;
+  let transporter;
+
+  try {
+    await dbManager.connect();
+    integration = await dbManager.getUserIntegration(userId);
+  } finally {
+    await dbManager.disconnect();
+  }
+
+  if (!integration?.smtpUser || !integration?.smtpPass) {
+    return res.status(400).json({
+      error: "SMTP credentials are missing. Please configure them in your settings before sending emails.",
+    });
+  }
+
+  try {
+    transporter = createTransporter({
+      smtpHost: integration.smtpHost,
+      smtpPort: integration.smtpPort,
+      smtpUser: integration.smtpUser,
+      smtpPass: integration.smtpPass,
+    });
+
+    await transporter.verify();
+  } catch (err) {
+    console.error("SMTP connection failed:", err.message);
+    return res.status(500).json({
+      error: "SMTP connection failed. Check your SMTP credentials and network.",
+    });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      include: { 
+        ausbildungen: {
+          where: {
+            ...(jobIds.length > 0 ? { id: { in: jobIds } } : {}),
+            motivationLetter: { not: null },
+            status: { not: "Done" }
+          }
+        }, 
+        documents: true 
+      },
+    });
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (user.ausbildungen.length === 0) {
+      return res.status(200).json({
+        sentCount: 0,
+        errors: [],
+        messageIds: [],
+        message: "No pending jobs with motivation letters found to send."
+      });
+    }
+
+    const results = {
+      sentCount: 0,
+      errors: [],
+      messageIds: [],
+    };
+
+    // Filter documents by selectedFiles if provided and convert to attachments
+    const additionalAttachments = user.documents
+      .filter((doc) => {
+        if (selectedFiles.length > 0) {
+          return selectedFiles.includes(doc.id);
+        }
+        return true;
+      })
+      .map((doc) => ({ 
+        filename: doc.originalName, 
+        content: doc.fileData,
+        contentType: doc.mimeType
       }));
 
-      res.json(formattedJobs);
-  } catch (error) {
-      logger.error('API Error in /api/jobs:', { details: error.message });
-      res.status(500).json({ error: 'Failed to retrieve jobs.', details: error.message });
-  } finally {
-      await dbManager.disconnect();
+    console.log("🔍 Filtered attachments:", additionalAttachments.map(a => a.filename));
+
+    for (const job of user.ausbildungen) {
+      try {
+        if (!job.motivationLetter || job.motivationLetter.length === 0) {
+          results.errors.push({ jobId: job.id, error: "Motivation letter not found." });
+          continue;
+        }
+
+        if (!job.emails || job.emails.trim() === "") {
+          results.errors.push({ jobId: job.id, error: "No recipient email." });
+          continue;
+        }
+
+        // Use selectedEmails if provided, otherwise use all job emails
+        let recipientEmails;
+        if (selectedEmails.length > 0) {
+          recipientEmails = selectedEmails;
+        } else {
+          recipientEmails = job.emails.split(",").map((e) => e.trim());
+        }
+
+        console.log("🔍 Sending to emails:", recipientEmails);
+
+        // Prepare attachments with motivation letter from database
+        const attachments = [
+          { 
+            filename: `Bewerbung_${user.firstName}_${job.institution.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`,
+            content: job.motivationLetter,
+            contentType: 'application/pdf'
+          },
+          ...additionalAttachments,
+        ];
+
+        let jobEmailsSent = 0;
+        for (const to of recipientEmails) {
+          try {
+            const greeting = job.institution
+              ? `Sehr geehrtes Ausbildungsteam der ${job.institution},`
+              : "Sehr geehrte Damen und Herren,";
+
+            const subject = `Bewerbung um einen Ausbildungsplatz als ${job.title} ab ${job.startDate || "N.N."}`;
+
+            const htmlBody = `
+              <p>${greeting}</p>
+              <p>anbei übersende ich Ihnen meine Bewerbungsunterlagen für die Ausbildung als <strong>${job.title}</strong> ab ${job.startDate || "N.N."}.</p>
+              <p>Im Anhang finden Sie meinen Lebenslauf sowie mein Bewerbungsschreiben.</p>
+              <p>Ich freue mich auf Ihre Rückmeldung und die Möglichkeit zu einem persönlichen Gespräch.</p>
+              <p>Mit freundlichen Grüßen</p>
+              <p><strong>${user.firstName} ${user.lastName}</strong><br>
+              <i>${user.email}</i></p>
+            `;
+
+            const textBody = `${greeting}\n\n` +
+              `anbei übersende ich Ihnen meine Bewerbungsunterlagen für die Ausbildung als ${job.title} ab ${job.startDate || "N.N."}.\n\n` +
+              `Im Anhang finden Sie meinen Lebenslauf sowie mein Bewerbungsschreiben.\n\n` +
+              `Ich freue mich auf Ihre Rückmeldung und die Möglichkeit zu einem persönlichen Gespräch.\n\n` +
+              `Mit freundlichen Grüßen\n` +
+              `${user.firstName} ${user.lastName}\n${user.email}`;
+
+            const info = await transporter.sendMail({
+              from: `"${user.firstName} ${user.lastName}" <${integration.smtpUser}>`,
+              to,
+              subject,
+              text: textBody,
+              html: htmlBody,
+              attachments,
+            });
+
+            results.sentCount++;
+            jobEmailsSent++;
+            results.messageIds.push({ jobId: job.id, messageId: info.messageId, to });
+            console.log(`✅ Email sent to ${to} for job ${job.title}`);
+          } catch (err) {
+            console.error(`Failed to send email to ${to}:`, err.message);
+            results.errors.push({ jobId: job.id, email: to, error: err.message });
+          }
+        }
+
+        if (jobEmailsSent > 0) {
+          await prisma.ausbildung.update({
+            where: { id: job.id },
+            data: { 
+              status: "Done",
+              updatedAt: new Date()
+            }
+          });
+          console.log(`✅ Updated job ${job.id} status to "Done"`);
+        }
+
+      } catch (err) {
+        results.errors.push({ jobId: job.id, error: err.message });
+      }
+    }
+
+    console.log(`📊 Email sending completed: ${results.sentCount} sent, ${results.errors.length} errors`);
+    res.json(results);
+  } catch (err) {
+    console.error("Email sending error:", err);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.get('/api/stats', async (req, res) => {
+app.get("/api/ausbildung/ready-to-send", authenticateToken, async (req, res) => {
   const dbManager = new DatabaseManager();
+  
   try {
-      await dbManager.connect();
-      const stats = await dbManager.getJobStats();
+    await dbManager.connect();
+    
+    const userId = req.userId;
+    
+    // ✅ ONLY GET JOBS THAT ARE READY TO SEND (HAVE MOTIVATION LETTERS BUT NOT SENT YET)
+    const readyJobs = await dbManager.prisma.ausbildung.findMany({
+      where: {
+        userId: userId,
+        motivationLetter: { not: null }, // Must have motivation letter
+        status: { not: "Done" } // Not already sent (could be "Pending" or "Ready to Send")
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
 
-      // 🔑 Normalize for frontend expectations
-      const formattedStats = {
-          totalJobs: stats.totalJobs || 0,
-          jobsWithMotivationLetters: stats.jobsWithMotivationLetters || 0
-      };
-
-      res.json(formattedStats);
+    res.status(200).json(readyJobs);
   } catch (error) {
-      logger.error('API Error in /api/stats:', { details: error.message });
-      res.status(500).json({ error: 'Failed to retrieve stats.', details: error.message });
+    logger.error("Failed to fetch ready to send jobs:", { 
+      error: error.message, 
+      stack: error.stack,
+      userId: req.userId 
+    });
+    res.status(500).json({ 
+      error: "Failed to fetch ready to send jobs.", 
+      details: error.message 
+    });
   } finally {
-      await dbManager.disconnect();
+    await dbManager.disconnect();
   }
 });
 
-// --- START SERVER ---
-const PORT = config.app.port;
-app.listen(PORT, () => {
-  logger.success(`🚀 API Server is running on http://localhost:${PORT}`);
+app.get("/api/ausbildung/stats", authenticateToken, async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = req.userId;
+    
+    // Get all user jobs
+    const allJobs = await dbManager.prisma.ausbildung.findMany({
+      where: { userId: userId }
+    });
+    
+    // Calculate stats based on status logic
+    const stats = {
+      totalJobs: allJobs.length,
+      pendingJobs: allJobs.filter(job => !job.motivationLetter && job.status !== "Done").length,
+      readyToSend: allJobs.filter(job => job.motivationLetter && job.status !== "Done").length,
+      doneJobs: allJobs.filter(job => job.status === "Done").length,
+      jobsWithMotivationLetters: allJobs.filter(job => job.motivationLetter).length,
+      // Legacy field for compatibility
+      applicationsSubmitted: allJobs.filter(job => job.status === "Done").length
+    };
+
+    res.status(200).json(stats);
+  } catch (error) {
+    logger.error("Failed to fetch stats:", { 
+      error: error.message, 
+      stack: error.stack,
+      userId: req.userId 
+    });
+    res.status(500).json({ 
+      error: "Failed to fetch stats.", 
+      details: error.message 
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+app.get("/api/ausbildung/stats", authenticateToken, async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = req.userId;
+    
+    // Get all user jobs
+    const allJobs = await dbManager.prisma.ausbildung.findMany({
+      where: { userId: userId }
+    });
+    
+    // Calculate stats based on status logic
+    const stats = {
+      totalJobs: allJobs.length,
+      pendingJobs: allJobs.filter(job => !job.motivationLetter && job.status !== "Done").length,
+      readyToSend: allJobs.filter(job => job.motivationLetter && job.status !== "Done").length,
+      doneJobs: allJobs.filter(job => job.status === "Done").length,
+      jobsWithMotivationLetters: allJobs.filter(job => job.motivationLetter).length,
+      // Legacy field for compatibility
+      applicationsSubmitted: allJobs.filter(job => job.status === "Done").length
+    };
+
+    res.status(200).json(stats);
+  } catch (error) {
+    logger.error("Failed to fetch stats:", { 
+      error: error.message, 
+      stack: error.stack,
+      userId: req.userId 
+    });
+    res.status(500).json({ 
+      error: "Failed to fetch stats.", 
+      details: error.message 
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+app.get("/api/ausbildung/ready-to-send", authenticateToken, async (req, res) => {
+  const dbManager = new DatabaseManager();
+  
+  try {
+    await dbManager.connect();
+    
+    const userId = req.userId;
+    
+    // ✅ ONLY GET JOBS THAT ARE READY TO SEND (HAVE MOTIVATION LETTERS BUT NOT SENT YET)
+    const readyJobs = await dbManager.prisma.ausbildung.findMany({
+      where: {
+        userId: userId,
+        motivationLetter: { not: null }, // Must have motivation letter
+        status: { not: "Done" } // Not already sent (could be "Pending" or "Ready to Send")
+      },
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+
+    res.status(200).json(readyJobs);
+  } catch (error) {
+    logger.error("Failed to fetch ready to send jobs:", { 
+      error: error.message, 
+      stack: error.stack,
+      userId: req.userId 
+    });
+    res.status(500).json({ 
+      error: "Failed to fetch ready to send jobs.", 
+      details: error.message 
+    });
+  } finally {
+    await dbManager.disconnect();
+  }
+});
+
+app.use("/api/users", authRouter);
+
+app.use("/api/ausbildung", addAusbildung);
+app.use("/api/settings", settingsRouter);
+
+const frontendDistPath = path.resolve(__dirname, "public");
+
+if (fs.existsSync(frontendDistPath)) {
+  app.use(express.static(frontendDistPath));
+
+  app.use((req, res, next) => {
+    if (
+      req.method !== "GET" ||
+      req.path.startsWith("/api") ||
+      path.extname(req.path)
+    ) {
+      return next();
+    }
+
+    return res.sendFile(path.join(frontendDistPath, "index.html"));
+  });
+}
+
+const HOST = process.env.HOST || "0.0.0.0";
+const PORT = Number(process.env.PORT || config.app.port || 3000);
+const displayHost = HOST === "0.0.0.0" ? "localhost" : HOST;
+
+app.listen(PORT, HOST, () => {
+  console.log(`🚀 Server running on http://${displayHost}:${PORT}`);
 });

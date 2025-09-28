@@ -1,43 +1,52 @@
-const { AuthService } = require('../services/AuthService'); // Adjust path as needed
-const { logger } = require('../utils');
+import jwt from "jsonwebtoken";
+import { logger } from "../utils.js";
 
-const authService = new AuthService();
-
-const protect = (req, res, next) => {
-  let token;
-
-  // 1. Try to get token from Authorization header
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    token = req.headers.authorization.split(' ')[1];
-  }
-
-  // 2. If not found, try cookies
-  if (!token && req.cookies?.token) {
-    token = req.cookies.token;
-  }
-
-  if (!token) {
-    return res.status(401).json({ error: 'Not authorized, no token.' });
-  }
-
+export function getUserIdFromToken(req) {
   try {
-    const decoded = authService.verifyToken(token);
+    let token = null;
 
-    if (!decoded) {
-      return res.status(401).json({ error: 'Not authorized, token failed.' });
+    if (req.headers.authorization) {
+      const authHeader = req.headers.authorization;
+      if (authHeader.startsWith("Bearer ")) {
+        token = authHeader.substring(7);
+      }
     }
 
-    // Attach user info to request
-    req.user = {
-      id: decoded.userId,
-      email: decoded.email
-    };
+    if (!token && req.cookies && req.cookies.auth) {
+      token = req.cookies.auth;
+    }
 
-    next();
+    if (!token) {
+      return null;
+    }
+
+    const JWT_SECRET = process.env.JWT_SECRET || "your-jwt-secret-key";
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (decoded && decoded.id) {
+      return String(decoded.id);
+    }
+
+    return null;
   } catch (error) {
-    logger.error('Auth middleware error:', error.message);
-    res.status(401).json({ error: 'Not authorized, token failed.' });
+    logger.error("Token verification failed", { error: error.message });
+    return null;
   }
-};
+}
 
-module.exports = { protect };
+export function authenticateToken(req, res, next) {
+  const userId = getUserIdFromToken(req);
+
+  if (!userId) {
+    return res.status(401).json({
+      error: "Unauthorized: Invalid or missing token",
+    });
+  }
+
+  req.userId = userId;
+  next();
+}
+
+export default authenticateToken;
+
+
