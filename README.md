@@ -35,6 +35,16 @@ npm run dev
 
 The Express API now runs on `http://localhost:8080` while the Vite dev server serves the UI on `http://localhost:5173` and proxies any `/api/*` requests to Express.
 
+### Deploying the frontend separately (e.g. Netlify)
+
+If you deploy the React UI on a static host, run the Netlify-specific build so assets land in `front/dist`:
+
+```bash
+npm --prefix front run build:netlify
+```
+
+The build script sets `BUILD_TARGET=netlify`, which makes Vite emit the bundle into `front/dist` while keeping the default behaviour (building into `backend/public`) for single-server deployments.
+
 ## Production build & single-server hosting
 
 1. Build the React frontend straight into `backend/public`:

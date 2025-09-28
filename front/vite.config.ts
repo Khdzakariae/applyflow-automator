@@ -3,6 +3,10 @@ import react from "@vitejs/plugin-react-swc";
 import path from "path";
 import { componentTagger } from "lovable-tagger";
 
+const defaultOutDir = path.resolve(__dirname, "../backend/public");
+const netlifyOutDir = path.resolve(__dirname, "dist");
+const outDir = process.env.BUILD_TARGET === "netlify" ? netlifyOutDir : defaultOutDir;
+
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
   server: {
@@ -17,7 +21,7 @@ export default defineConfig(({ mode }) => ({
     },
   },
   build: {
-    outDir: path.resolve(__dirname, "../backend/public"),
+    outDir,
     emptyOutDir: true,
     chunkSizeWarningLimit: 1024,
   },
