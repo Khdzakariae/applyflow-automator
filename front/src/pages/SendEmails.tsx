@@ -36,9 +36,10 @@ const api = {
     if (!response.ok) throw new Error('Failed to fetch ready to send jobs');
     return response.json();
   },
+  
 
   async getDocuments() {
-    const response = await fetch(`${API_BASE_URL}/documents`, {
+      const response = await fetch(`${API_BASE_URL}/documents`, {
       headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
     });
     if (!response.ok) throw new Error('Failed to fetch documents');

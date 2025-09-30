@@ -16,6 +16,13 @@ model User {
   email        String       @unique
   password     String
   verified     Boolean      @default(false)
+  
+  // Personal information for cover letters
+  street       String?      // e.g., "Musterstraße 10"
+  postalCode   String?      // e.g., "12345"
+  city         String?      // e.g., "Musterstadt"
+  phone        String?      // e.g., "0123 456789"
+  
   ausbildungen Ausbildung[] // One-to-many relation
   campaigns   EmailCampaign[]
   documents   Document[]

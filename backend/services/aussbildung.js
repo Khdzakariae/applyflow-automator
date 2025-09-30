@@ -256,7 +256,7 @@ class AusbildungScraperAdvanced {
           selectors: {
             title: 'h1',
             company: 'h4[data-testid="jp-customer"], .company-name, [itemprop="hiringOrganization"]',
-            location: '[data-testid="jp-branches"], .company-address, .job-location',
+            location: '[data-testid="jp-branches"], .company-address, .jp-title__address',
             startDate: '[data-testid="jp-starting-at"], .jp-starting-at, .start-date',
             vacancies: '[data-testid="jp-vacancies"], .vacancies, .job-vacancies'
           }
@@ -608,7 +608,7 @@ class AusbildungScraperAdvanced {
           });
       
           const jobRecord = {
-            title: jobData.title,
+            title: "Ausbildung Pflegefachmann/-frau",
             institution: jobData.institution,
             location: jobData.location || "N/A",
             startDate: jobData.start_date || "N/A",

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'sonner';
 
 // Define the base URL for your backend API
-const API_BASE_URL = 'http://localhost:8080/api/ausbildung';
+const API_BASE_URL = 'http://localhost:3000/api/ausbildung';
 
 // Interface matching your backend's EmailCampaign model
 export interface EmailCampaign {

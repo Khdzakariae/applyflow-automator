@@ -46,6 +46,17 @@ function createTransporter({ smtpHost, smtpPort, smtpUser, smtpPass }) {
     tls: {
       rejectUnauthorized: false,
     },
+    // Add connection options to fix network issues
+    connectionTimeout: 60000, // 60 seconds
+    greetingTimeout: 30000, // 30 seconds
+    socketTimeout: 60000, // 60 seconds
+    // Force IPv4 to avoid IPv6 connection issues
+    family: 4,
+    // Add pool configuration for better connection management
+    pool: true,
+    maxConnections: 5,
+    maxMessages: 100,
+    rateLimit: 14, // max 14 messages per second
   });
 }
 
@@ -60,6 +71,9 @@ const allowedOriginSet = new Set(
 const serverPort = Number(process.env.PORT || config.app.port || 3000);
 allowedOriginSet.add(`http://localhost:${serverPort}`);
 allowedOriginSet.add(`http://127.0.0.1:${serverPort}`);
+// Add Vite dev server origin
+allowedOriginSet.add("http://localhost:5173");
+allowedOriginSet.add("http://127.0.0.1:5173");
 
 app.use(
   cors({
@@ -138,6 +152,10 @@ class AdvancedMotivationLetterGenerator {
     }
 
     logger.info("📝 Starting motivation letter generation...");
+    
+    // Validate user profile before generating letters
+    await this.validateUserProfile();
+    
     let successCount = 0;
     const shouldDisconnect = this.manageConnection;
 
@@ -202,19 +220,304 @@ class AdvancedMotivationLetterGenerator {
 
   async generateLetterText(jobInfo, cvText) {
     return await RetryHelper.withRetry(async () => {
-      const { title, institution, description, location, startDate } = jobInfo;
+      const { institution, description, location, startDate } = jobInfo;
+
+      const title = "Ausbildung Pflegefachmann/-frau";
+
+      // Get user profile information from database
+      const userProfile = await this.getUserProfile();
+
+      // Get current date in German format
+      const currentDate = new Date().toLocaleDateString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+
       const context = `Ausbildungsposition: ${title}\nStandort: ${location}\nAusbildungsbeginn: ${startDate || "N.N."}`;
       const prompt =
-        `Ich bewerbe mich um eine Ausbildung bei "${institution}".\n\n` +
-        `Stellenausschreibung:\n${context}\n\n` +
-        `Stellenbeschreibung: ${description}\n\n` +
-        `Mein Lebenslauf:\n${cvText}\n\n` +
-        `Bitte verfasse ein professionelles Bewerbungsschreiben. Anforderungen: Deutsch, 300-450 Wörter, ` +
-        `professioneller Ton, auf die Ausbildung und Firma zugeschnitten. Beginne mit "Bewerbung um einen Ausbildungsplatz als..." ` +
-        `und schließe mit "Mit freundlichen Grüßen".`;
-      const result = await this.model.generateContent(prompt);
-      return result.response.text();
+        `Sie sind ein professioneller Bewerbungsexperte. Erstellen Sie ein deutsches Bewerbungsschreiben.\n\n` +
+        `BEWERBUNGSDETAILS:\n` +
+        `Unternehmen: ${institution}\n` +
+        `Position: ${title}\n` +
+        `Standort: ${location}\n` +
+        `Ausbildungsbeginn: ${startDate || "N.N."}\n` +
+        `Heute: ${currentDate}\n\n` +
+        `STELLENBESCHREIBUNG:\n${description}\n\n` +
+        `BEWERBER-LEBENSLAUF:\n${cvText}\n\n` +
+        `BRIEFFORMAT - Erstellen Sie ein deutsches Bewerbungsschreiben in folgendem Format:\n\n` +
+        `Absender:\n` +
+        `${userProfile.name}\n` +
+        `${userProfile.street}\n` +
+        `${userProfile.postalCode} ${userProfile.city}\n` +
+        `Tel.: ${userProfile.phone}\n` +
+        `E-Mail: ${userProfile.email}\n\n` +
+        `${userProfile.city}, ${currentDate}\n\n` +
+        `Betreff: Bewerbung um eine Ausbildung als ${title}\n\n` +
+        `FORMATVORGABEN:\n` +
+        `- Verwenden Sie das oben angegebene deutsche Briefformat\n` +
+        `- KEINE Empfängeradresse hinzufügen (nur Absender)\n` +
+        `- Verwenden Sie "${userProfile.city}" als Ortsangabe beim Datum\n` +
+        `- KEINE Backslashes (\\) oder \\n Zeichen\n` +
+        `- KEINE Markdown-Formatierung (**text**)\n` +
+        `- Normale Absätze durch Leerzeilen trennen\n` +
+        `- Enden mit: "Mit freundlichen Grüßen\\n\\n(Unterschrift)\\n${userProfile.name}"\n\n` +
+        `INHALTLICHE ANFORDERUNGEN:\n` +
+        `- 300-450 Wörter Haupttext\n` +
+        `- Professioneller, höflicher Ton\n` +
+        `- Bezug zur spezifischen Ausbildung und zum Unternehmen\n` +
+        `- Relevante Erfahrungen aus dem Lebenslauf einbauen\n` +
+        `- Interesse und Motivation zeigen\n\n` +
+        `WICHTIG:\n` +
+        `Schreiben Sie den kompletten Brief mit der angegebenen Kopfzeile. Verwenden Sie immer Kenitra als Ortsangabe.`;
+      
+      let result;
+      try {
+        result = await this.model.generateContent(prompt);
+      } catch (error) {
+        // If the current model fails, try with different model names
+        logger.warn(`Model ${this.modelName} failed, trying fallback models:`, error.message);
+        
+        const fallbackModels = [
+          "gemini-pro",
+          "gemini-1.5-pro-latest", 
+          "gemini-1.0-pro"
+        ];
+        
+        for (const fallbackModel of fallbackModels) {
+          try {
+            logger.info(`Trying fallback model: ${fallbackModel}`);
+            const fallbackGenAI = new GoogleGenerativeAI(this.apiKey);
+            const fallbackModelInstance = fallbackGenAI.getGenerativeModel({ model: fallbackModel });
+            result = await fallbackModelInstance.generateContent(prompt);
+            this.model = fallbackModelInstance; // Update the model for subsequent calls
+            this.modelName = fallbackModel;
+            logger.success(`Successfully switched to model: ${fallbackModel}`);
+            break;
+          } catch (fallbackError) {
+            logger.warn(`Fallback model ${fallbackModel} also failed:`, fallbackError.message);
+          }
+        }
+        
+        if (!result) {
+          throw new Error(`All Gemini models failed. Last error: ${error.message}`);
+        }
+      }
+      
+      let letterText = result.response.text();
+      
+      // Post-process to remove any AI introductory text and formatting issues
+      letterText = this.cleanAIResponse(letterText, userProfile);
+      
+      return letterText;
     });
+  }
+
+  // Validate that user has filled required profile information
+  async validateUserProfile() {
+    const user = await this.dbManager.prisma.user.findUnique({
+      where: { id: this.userId },
+      select: {
+        firstName: true,
+        lastName: true,
+        street: true,
+        postalCode: true,
+        city: true,
+        phone: true,
+      },
+    });
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    const missingFields = [];
+    if (!user.firstName?.trim()) missingFields.push("Prénom");
+    if (!user.lastName?.trim()) missingFields.push("Nom de famille");
+    if (!user.street?.trim()) missingFields.push("Adresse");
+    if (!user.postalCode?.trim()) missingFields.push("Code postal");
+    if (!user.city?.trim()) missingFields.push("Ville");
+    if (!user.phone?.trim()) missingFields.push("Téléphone");
+
+    if (missingFields.length > 0) {
+      const fieldsText = missingFields.join(", ");
+      throw new Error(
+        `Veuillez compléter votre profil dans les paramètres avant de générer des lettres de motivation. ` +
+        `Champs manquants: ${fieldsText}. ` +
+        `Allez dans Paramètres > Informations du profil pour remplir ces informations.`
+      );
+    }
+  }
+
+  // Get user profile information from database
+  async getUserProfile() {
+    const user = await this.dbManager.prisma.user.findUnique({
+      where: { id: this.userId },
+      select: {
+        firstName: true,
+        lastName: true,
+        name: true,
+        email: true,
+        street: true,
+        postalCode: true,
+        city: true,
+        phone: true,
+      },
+    });
+
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    // Return formatted profile with fallbacks
+    return {
+      name: user.name || `${user.firstName} ${user.lastName}`,
+      street: user.street || 'Musterstraße 10',
+      postalCode: user.postalCode || '12345',
+      city: user.city || 'Musterstadt', 
+      phone: user.phone || '0123 456789',
+      email: user.email,
+    };
+  }
+
+  // Extract personal information from CV text
+  extractPersonalInfoFromCV(cvText) {
+    const personalInfo = {
+      name: '',
+      address: '',
+      phone: '',
+      email: '',
+      city: 'Kenitra' // Default fallback
+    };
+
+    // Extract name (usually appears early in CV)
+    const nameMatch = cvText.match(/([A-Z][a-z]+ [A-Z][a-z]+(?:\s[A-Z][a-z]+)?)/);
+    if (nameMatch) {
+      personalInfo.name = nameMatch[1];
+    }
+
+    // Extract email
+    const emailMatch = cvText.match(/([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z]{2,})/);
+    if (emailMatch) {
+      personalInfo.email = emailMatch[1];
+    }
+
+    // Extract phone number (international format or local)
+    const phoneMatch = cvText.match(/(\+?\d{1,4}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{3,4})/);
+    if (phoneMatch) {
+      personalInfo.phone = phoneMatch[1];
+    }
+
+    // Extract address (look for patterns that include street, city, postal code)
+    const addressPatterns = [
+      /([A-Z\s\d]+(?:straße|str\.?|avenue|boulevard|allee)[^\n]*)/i,
+      /(N\s?\d+[^\n]*)/i,
+      /([A-Z][a-z]+\s+[A-Z][a-z]+[^\n]*)/
+    ];
+
+    let fullAddress = '';
+    for (const pattern of addressPatterns) {
+      const match = cvText.match(pattern);
+      if (match && match[1]) {
+        fullAddress += match[1].trim() + '\n';
+      }
+    }
+
+    if (fullAddress) {
+      personalInfo.address = fullAddress.trim();
+    }
+
+    // Extract city (look for common patterns)
+    const cityMatch = cvText.match(/(Kenitra|Berlin|München|Hamburg|Köln|Frankfurt|Stuttgart|Düsseldorf|Dortmund|Essen|Leipzig|Bremen|Dresden|Hannover|Nürnberg|Duisburg|Bochum|Wuppertal|Bonn|Bielefeld|Mannheim)/i);
+    if (cityMatch) {
+      personalInfo.city = cityMatch[1];
+    }
+
+    // Fallback values if extraction fails
+    if (!personalInfo.name) personalInfo.name = 'Anass Ahfidi';
+    if (!personalInfo.address) personalInfo.address = 'N 128 LOTIS ALLIANCE DARNA\nTR2 PHASE B MEHDIA KENITRA';
+    if (!personalInfo.phone) personalInfo.phone = '+212 603501378';
+    if (!personalInfo.email) personalInfo.email = 'anassahfidi.aussbildung@gmail.com';
+
+    return personalInfo;
+  }
+
+  // Enhanced helper method to clean AI response while preserving sender information
+  cleanAIResponse(text, userProfile) {
+    // Remove common AI introduction patterns
+    const introPatterns = [
+      /^Absolut\..*?basiert\.\s*/s,
+      /^Hier ist.*?Bewerbungsschreiben.*?\.\s*/s,
+      /^Gerne.*?verfasse.*?\.\s*/s,
+      /^Selbstverständlich.*?\.\s*/s,
+      /^Natürlich.*?\.\s*/s,
+      /^Sehr gerne.*?\.\s*/s,
+      /^Ich erstelle.*?\.\s*/s,
+      /^Das ist.*?Bewerbungsschreiben.*?\.\s*/s
+    ];
+
+    let cleanedText = text;
+    
+    // Apply each pattern to remove introductory text
+    for (const pattern of introPatterns) {
+      cleanedText = cleanedText.replace(pattern, '');
+    }
+    
+    // Clean up formatting but preserve sender address
+    cleanedText = cleanedText
+      // Remove backslashes and \n sequences but preserve structure
+      .replace(/\\\n/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\/g, '')
+      
+      // Remove markdown formatting
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/\*(.*?)\*/g, '$1')
+      
+      // Remove unwanted company addresses (but keep sender address)
+      .replace(/^.*Personalabteilung.*$/gm, '')
+      .replace(/^.*Kaiserstraße.*$/gm, '')
+      .replace(/^.*Goethestraße.*$/gm, '')
+      .replace(/^.*\d{5}\s+(?!${userProfile.city})\w+.*$/gm, '') // Remove postal codes but keep user's city
+      
+      // Remove "Betreff:" lines
+      .replace(/^.*Betreff:.*$/gm, '')
+      
+      // Clean up multiple newlines
+      .replace(/\n\s*\n\s*\n/g, '\n\n')
+      .replace(/^\s+/gm, '')
+      .trim();
+    
+    // Ensure proper structure starting with sender info
+    if (!cleanedText.startsWith(userProfile.name)) {
+      // Find the sender info or create it
+      const dateStr = new Date().toLocaleDateString('de-DE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+      
+      const header = `Absender:
+${userProfile.name}
+${userProfile.street}
+${userProfile.postalCode} ${userProfile.city}
+Tel.: ${userProfile.phone}
+E-Mail: ${userProfile.email}
+
+${userProfile.city}, ${dateStr}
+
+`;
+      
+      // Find where the actual letter content starts
+      const bewerbungIndex = cleanedText.search(/Bewerbung um einen Ausbildungsplatz|Betreff:/i);
+      if (bewerbungIndex !== -1) {
+        cleanedText = header + cleanedText.substring(bewerbungIndex);
+      } else {
+        cleanedText = header + cleanedText;
+      }
+    }
+    
+    return cleanedText;
   }
 
   createPDF(letterText, filename, jobTitle, company) {
@@ -687,11 +990,42 @@ app.post("/api/ausbildung/email/send", async (req, res) => {
       smtpPass: integration.smtpPass,
     });
 
-    await transporter.verify();
+    console.log("🔍 SMTP Config:", {
+      host: integration.smtpHost || "smtp.gmail.com",
+      port: integration.smtpPort || 587,
+      user: integration.smtpUser,
+      hasPassword: !!integration.smtpPass
+    });
+
+    // Add timeout to verification
+    const verifyPromise = transporter.verify();
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('SMTP verification timeout after 30 seconds')), 30000);
+    });
+    
+    await Promise.race([verifyPromise, timeoutPromise]);
+    console.log("✅ SMTP connection verified successfully");
   } catch (err) {
     console.error("SMTP connection failed:", err.message);
+    console.error("Full error:", err);
+    
+    // Provide more specific error messages
+    let errorMessage = "SMTP connection failed. ";
+    if (err.message.includes('EHOSTUNREACH')) {
+      errorMessage += "Cannot reach the SMTP server. Check your internet connection and firewall settings.";
+    } else if (err.message.includes('ENOTFOUND')) {
+      errorMessage += "SMTP server not found. Check the SMTP host configuration.";
+    } else if (err.message.includes('535') || err.message.includes('authentication')) {
+      errorMessage += "Authentication failed. Check your email and password/app password.";
+    } else if (err.message.includes('timeout')) {
+      errorMessage += "Connection timeout. The server may be busy or unreachable.";
+    } else {
+      errorMessage += "Check your SMTP credentials and network.";
+    }
+    
     return res.status(500).json({
-      error: "SMTP connection failed. Check your SMTP credentials and network.",
+      error: errorMessage,
+      details: err.message
     });
   }
 
@@ -755,12 +1089,21 @@ app.post("/api/ausbildung/email/send", async (req, res) => {
           continue;
         }
 
-        // Use selectedEmails if provided, otherwise use all job emails
+        // Use selectedEmails if provided and not empty, otherwise use all job emails
         let recipientEmails;
         if (selectedEmails.length > 0) {
           recipientEmails = selectedEmails;
         } else {
-          recipientEmails = job.emails.split(",").map((e) => e.trim());
+          // Parse job emails and filter out empty ones
+          recipientEmails = job.emails.split(",")
+            .map((e) => e.trim())
+            .filter((e) => e.length > 0);
+        }
+        
+        // Skip if no valid emails found
+        if (recipientEmails.length === 0) {
+          results.errors.push({ jobId: job.id, error: "No valid recipient emails found." });
+          continue;
         }
 
         console.log("🔍 Sending to emails:", recipientEmails);
@@ -850,7 +1193,11 @@ app.get("/api/ausbildung/ready-to-send", authenticateToken, async (req, res) => 
   try {
     await dbManager.connect();
     
-    const userId = req.userId;
+    const userId = getUserIdFromToken(req);
+    
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
     
     // ✅ ONLY GET JOBS THAT ARE READY TO SEND (HAVE MOTIVATION LETTERS BUT NOT SENT YET)
     const readyJobs = await dbManager.prisma.ausbildung.findMany({
@@ -869,7 +1216,7 @@ app.get("/api/ausbildung/ready-to-send", authenticateToken, async (req, res) => 
     logger.error("Failed to fetch ready to send jobs:", { 
       error: error.message, 
       stack: error.stack,
-      userId: req.userId 
+      userId: getUserIdFromToken(req) 
     });
     res.status(500).json({ 
       error: "Failed to fetch ready to send jobs.", 
@@ -886,7 +1233,11 @@ app.get("/api/ausbildung/stats", authenticateToken, async (req, res) => {
   try {
     await dbManager.connect();
     
-    const userId = req.userId;
+    const userId = getUserIdFromToken(req);
+    
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
     
     // Get all user jobs
     const allJobs = await dbManager.prisma.ausbildung.findMany({
@@ -909,7 +1260,7 @@ app.get("/api/ausbildung/stats", authenticateToken, async (req, res) => {
     logger.error("Failed to fetch stats:", { 
       error: error.message, 
       stack: error.stack,
-      userId: req.userId 
+      userId: getUserIdFromToken(req) 
     });
     res.status(500).json({ 
       error: "Failed to fetch stats.", 
@@ -920,75 +1271,72 @@ app.get("/api/ausbildung/stats", authenticateToken, async (req, res) => {
   }
 });
 
-app.get("/api/ausbildung/stats", authenticateToken, async (req, res) => {
+// Reset all motivation letters - DELETE all motivation letters and reset status to Pending
+app.delete("/api/ausbildung/reset-letters", authenticateToken, async (req, res) => {
   const dbManager = new DatabaseManager();
   
   try {
     await dbManager.connect();
     
-    const userId = req.userId;
+    const userId = getUserIdFromToken(req);
     
-    // Get all user jobs
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized: User ID not found in token." });
+    }
+
+    // Get all jobs for the user to count them
     const allJobs = await dbManager.prisma.ausbildung.findMany({
-      where: { userId: userId }
-    });
-    
-    // Calculate stats based on status logic
-    const stats = {
-      totalJobs: allJobs.length,
-      pendingJobs: allJobs.filter(job => !job.motivationLetter && job.status !== "Done").length,
-      readyToSend: allJobs.filter(job => job.motivationLetter && job.status !== "Done").length,
-      doneJobs: allJobs.filter(job => job.status === "Done").length,
-      jobsWithMotivationLetters: allJobs.filter(job => job.motivationLetter).length,
-      // Legacy field for compatibility
-      applicationsSubmitted: allJobs.filter(job => job.status === "Done").length
-    };
-
-    res.status(200).json(stats);
-  } catch (error) {
-    logger.error("Failed to fetch stats:", { 
-      error: error.message, 
-      stack: error.stack,
-      userId: req.userId 
-    });
-    res.status(500).json({ 
-      error: "Failed to fetch stats.", 
-      details: error.message 
-    });
-  } finally {
-    await dbManager.disconnect();
-  }
-});
-
-app.get("/api/ausbildung/ready-to-send", authenticateToken, async (req, res) => {
-  const dbManager = new DatabaseManager();
-  
-  try {
-    await dbManager.connect();
-    
-    const userId = req.userId;
-    
-    // ✅ ONLY GET JOBS THAT ARE READY TO SEND (HAVE MOTIVATION LETTERS BUT NOT SENT YET)
-    const readyJobs = await dbManager.prisma.ausbildung.findMany({
-      where: {
-        userId: userId,
-        motivationLetter: { not: null }, // Must have motivation letter
-        status: { not: "Done" } // Not already sent (could be "Pending" or "Ready to Send")
-      },
-      orderBy: {
-        createdAt: 'desc'
+      where: { userId: userId },
+      select: { 
+        id: true, 
+        title: true, 
+        institution: true,
+        motivationLetter: true,
+        status: true 
       }
     });
 
-    res.status(200).json(readyJobs);
+    // Count jobs with motivation letters before reset
+    const jobsWithLetters = allJobs.filter(job => job.motivationLetter !== null);
+    const jobsAlreadyPending = allJobs.filter(job => job.status === "Pending");
+
+    // Reset all motivation letters and status to Pending
+    const updateResult = await dbManager.prisma.ausbildung.updateMany({
+      where: { 
+        userId: userId 
+      },
+      data: {
+        motivationLetter: null, // Remove motivation letter
+        status: "Pending"       // Reset status to Pending
+      }
+    });
+
+    logger.info(`Reset motivation letters for user ${userId}:`, {
+      totalJobs: allJobs.length,
+      jobsWithLettersBefore: jobsWithLetters.length,
+      jobsAlreadyPending: jobsAlreadyPending.length,
+      updatedCount: updateResult.count
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "All motivation letters deleted and jobs reset to Pending status",
+      stats: {
+        totalJobs: allJobs.length,
+        jobsWithLettersRemoved: jobsWithLetters.length,
+        jobsUpdated: updateResult.count,
+        previouslyPending: jobsAlreadyPending.length
+      }
+    });
+
   } catch (error) {
-    logger.error("Failed to fetch ready to send jobs:", { 
+    logger.error("Failed to reset motivation letters:", { 
       error: error.message, 
       stack: error.stack,
-      userId: req.userId 
+      userId: getUserIdFromToken(req) 
     });
     res.status(500).json({ 
-      error: "Failed to fetch ready to send jobs.", 
+      error: "Failed to reset motivation letters.", 
       details: error.message 
     });
   } finally {

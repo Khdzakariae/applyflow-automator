@@ -38,6 +38,16 @@ interface IntegrationSettings {
   createdAt?: string;
 }
 
+interface UserProfile {
+  firstName: string;
+  lastName: string;
+  email: string;
+  street: string;
+  postalCode: string;
+  city: string;
+  phone: string;
+}
+
 const DEFAULT_SETTINGS: IntegrationSettings = {
   geminiApiKey: "",
   geminiModel: "gemini-1.5-flash",
@@ -51,8 +61,27 @@ const Settings = () => {
   const { user } = useAuth();
   const [formData, setFormData] = useState<IntegrationSettings>(DEFAULT_SETTINGS);
   const [initialData, setInitialData] = useState<IntegrationSettings>(DEFAULT_SETTINGS);
+  const [profileData, setProfileData] = useState<UserProfile>({
+    firstName: "",
+    lastName: "",
+    email: "",
+    street: "",
+    postalCode: "",
+    city: "",
+    phone: "",
+  });
+  const [initialProfileData, setInitialProfileData] = useState<UserProfile>({
+    firstName: "",
+    lastName: "",
+    email: "",
+    street: "",
+    postalCode: "",
+    city: "",
+    phone: "",
+  });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [showSecrets, setShowSecrets] = useState(false);
 
   const token = typeof window !== "undefined" ? localStorage.getItem("token") : null;
@@ -67,29 +96,39 @@ const Settings = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch("http://localhost:3000/api/settings/integration", {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-      });
+      // Fetch both integration and profile settings
+      const [integrationResponse, profileResponse] = await Promise.all([
+        fetch("http://localhost:3000/api/settings/integration", {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        }),
+        fetch("http://localhost:3000/api/settings/profile", {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+        })
+      ]);
 
-      if (!response.ok) {
+      if (!integrationResponse.ok) {
         throw new Error("Unable to load integration settings");
       }
 
-      const data = await response.json();
-      if (data?.settings) {
+      const integrationData = await integrationResponse.json();
+      if (integrationData?.settings) {
         const payload: IntegrationSettings = {
-          geminiApiKey: data.settings.geminiApiKey || "",
-          geminiModel: data.settings.geminiModel || DEFAULT_SETTINGS.geminiModel,
-          smtpUser: data.settings.smtpUser || "",
-          smtpPass: data.settings.smtpPass || "",
-          smtpHost: data.settings.smtpHost || DEFAULT_SETTINGS.smtpHost,
-          smtpPort: data.settings.smtpPort ? String(data.settings.smtpPort) : DEFAULT_SETTINGS.smtpPort,
-          updatedAt: data.settings.updatedAt,
-          createdAt: data.settings.createdAt,
+          geminiApiKey: integrationData.settings.geminiApiKey || "",
+          geminiModel: integrationData.settings.geminiModel || DEFAULT_SETTINGS.geminiModel,
+          smtpUser: integrationData.settings.smtpUser || "",
+          smtpPass: integrationData.settings.smtpPass || "",
+          smtpHost: integrationData.settings.smtpHost || DEFAULT_SETTINGS.smtpHost,
+          smtpPort: integrationData.settings.smtpPort ? String(integrationData.settings.smtpPort) : DEFAULT_SETTINGS.smtpPort,
+          updatedAt: integrationData.settings.updatedAt,
+          createdAt: integrationData.settings.createdAt,
         };
         setFormData(payload);
         setInitialData(payload);
@@ -97,8 +136,30 @@ const Settings = () => {
         setFormData(DEFAULT_SETTINGS);
         setInitialData(DEFAULT_SETTINGS);
       }
+
+      // Handle profile data
+      if (profileResponse.ok) {
+        const profileData = await profileResponse.json();
+        console.log("Profile data received:", profileData);
+        if (profileData?.profile) {
+          const profilePayload: UserProfile = {
+            firstName: profileData.profile.firstName || "",
+            lastName: profileData.profile.lastName || "",
+            email: profileData.profile.email || "",
+            street: profileData.profile.street || "",
+            postalCode: profileData.profile.postalCode || "",
+            city: profileData.profile.city || "",
+            phone: profileData.profile.phone || "",
+          };
+          setProfileData(profilePayload);
+          setInitialProfileData(profilePayload);
+          console.log("Profile state updated:", profilePayload);
+        }
+      } else {
+        console.error("Profile response not ok:", profileResponse.status);
+      }
     } catch (error: any) {
-      toast.error(error.message || "Failed to fetch integration settings");
+      toast.error(error.message || "Failed to fetch settings");
     } finally {
       setIsLoading(false);
     }
@@ -113,6 +174,10 @@ const Settings = () => {
     setFormData((prev) => ({ ...prev, [field]: value }));
   };
 
+  const handleProfileChange = (field: keyof UserProfile, value: string) => {
+    setProfileData((prev) => ({ ...prev, [field]: value }));
+  };
+
   const hasChanges = useMemo(() => {
     return (
       formData.geminiApiKey !== initialData.geminiApiKey ||
@@ -123,6 +188,17 @@ const Settings = () => {
       formData.smtpPort !== initialData.smtpPort
     );
   }, [formData, initialData]);
+
+  const hasProfileChanges = useMemo(() => {
+    return (
+      profileData.firstName !== initialProfileData.firstName ||
+      profileData.lastName !== initialProfileData.lastName ||
+      profileData.street !== initialProfileData.street ||
+      profileData.postalCode !== initialProfileData.postalCode ||
+      profileData.city !== initialProfileData.city ||
+      profileData.phone !== initialProfileData.phone
+    );
+  }, [profileData, initialProfileData]);
 
   const handleSave = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -179,6 +255,56 @@ const Settings = () => {
       toast.error(error.message || "Could not save integration settings");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSaveProfile = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!token || token === "null") {
+      toast.error("Authentication token missing. Please sign in again.");
+      return;
+    }
+
+    setIsSavingProfile(true);
+    try {
+      const response = await fetch("http://localhost:3000/api/settings/profile", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          firstName: profileData.firstName.trim() || undefined,
+          lastName: profileData.lastName.trim() || undefined,
+          street: profileData.street.trim() || undefined,
+          postalCode: profileData.postalCode.trim() || undefined,
+          city: profileData.city.trim() || undefined,
+          phone: profileData.phone.trim() || undefined,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error?.error || "Failed to save profile");
+      }
+
+      const data = await response.json();
+      const profilePayload: UserProfile = {
+        firstName: data.profile.firstName || "",
+        lastName: data.profile.lastName || "",
+        email: data.profile.email || "",
+        street: data.profile.street || "",
+        postalCode: data.profile.postalCode || "",
+        city: data.profile.city || "",
+        phone: data.profile.phone || "",
+      };
+      setProfileData(profilePayload);
+      setInitialProfileData(profilePayload);
+      toast.success(data?.message || "Profile saved successfully");
+    } catch (error: any) {
+      toast.error(error.message || "Could not save profile");
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -321,6 +447,141 @@ const Settings = () => {
                     </Button>
                   </div>
                 </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          {/* Profile Information */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.12 }}>
+            <Card className="shadow-elegant border-2 border-primary">
+              <CardHeader className="bg-primary/5">
+                <CardTitle className="flex items-center gap-2 text-xl">
+                  <ShieldCheck className="w-5 h-5 text-primary" />
+                  Informations personnelles
+                </CardTitle>
+                <CardDescription>
+                  Ces informations seront utilisées dans l'en-tête de vos lettres de motivation. 
+                  Tous les champs sont requis pour générer des lettres professionnelles au format allemand.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <form className="space-y-6" onSubmit={handleSaveProfile}>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="firstName">Prénom *</Label>
+                      <Input
+                        id="firstName"
+                        type="text"
+                        value={profileData.firstName}
+                        onChange={(e) => handleProfileChange("firstName", e.target.value)}
+                        placeholder="e.g., Anass"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="lastName">Nom de famille *</Label>
+                      <Input
+                        id="lastName"
+                        type="text"
+                        value={profileData.lastName}
+                        onChange={(e) => handleProfileChange("lastName", e.target.value)}
+                        placeholder="e.g., Ahfidi"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="street">Adresse *</Label>
+                    <Input
+                      id="street"
+                      type="text"
+                      value={profileData.street}
+                      onChange={(e) => handleProfileChange("street", e.target.value)}
+                      placeholder="e.g., Musterstraße 10"
+                    />
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="postalCode">Code postal *</Label>
+                      <Input
+                        id="postalCode"
+                        type="text"
+                        value={profileData.postalCode}
+                        onChange={(e) => handleProfileChange("postalCode", e.target.value)}
+                        placeholder="e.g., 12345"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="city">Ville *</Label>
+                      <Input
+                        id="city"
+                        type="text"
+                        value={profileData.city}
+                        onChange={(e) => handleProfileChange("city", e.target.value)}
+                        placeholder="e.g., Kenitra"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="phone">Téléphone *</Label>
+                    <Input
+                      id="phone"
+                      type="tel"
+                      value={profileData.phone}
+                      onChange={(e) => handleProfileChange("phone", e.target.value)}
+                      placeholder="e.g., 0123 456789"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="email">Email</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      value={profileData.email}
+                      disabled
+                      className="bg-muted"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Email cannot be changed from this form
+                    </p>
+                  </div>
+
+                  <div className="flex gap-4">
+                    <Button 
+                      type="submit" 
+                      disabled={!hasProfileChanges || isSavingProfile}
+                      className="min-w-[120px]"
+                    >
+                      {isSavingProfile ? (
+                        <>
+                          <LoadingSpinner className="w-4 h-4 mr-2" />
+                          Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-4 h-4 mr-2" />
+                          Save Profile
+                        </>
+                      )}
+                    </Button>
+                    
+                    {hasProfileChanges && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => {
+                          setProfileData(initialProfileData);
+                          toast.info("Profile changes discarded");
+                        }}
+                      >
+                        <Undo2 className="w-4 h-4 mr-2" />
+                        Discard Changes
+                      </Button>
+                    )}
+                  </div>
+                </form>
               </CardContent>
             </Card>
           </motion.div>

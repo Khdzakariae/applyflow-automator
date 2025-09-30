@@ -11,7 +11,7 @@ import { LoadingSpinner } from '@/components/ui/loading-spinner';
 import { Upload, FileText, Trash2, Download } from 'lucide-react';
 
 // --- Configuration & Interfaces ---
-const API_BASE_URL = 'http://localhost:8080/api/ausbildung';
+const API_BASE_URL = 'http://localhost:3000/api/ausbildung';
 
 // This interface now matches your Prisma/Node.js backend model
 interface Document {

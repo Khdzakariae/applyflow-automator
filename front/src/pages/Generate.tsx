@@ -39,6 +39,7 @@ const Generate = () => {
   const [existingCVs, setExistingCVs] = useState<ExistingCv[]>([]);
   const [selectedExistingCV, setSelectedExistingCV] = useState<string>('');
   const [cvOption, setCvOption] = useState<CvOption>('upload');
+  const [profileIncomplete, setProfileIncomplete] = useState<string[]>([]);
   const token = localStorage.getItem("token");
 
   
@@ -97,6 +98,10 @@ const Generate = () => {
       } catch (error) {
         toast.error('Failed to get stats from the server.');
       }
+
+      // Check user profile completeness
+      const missingFields = await checkUserProfile();
+      setProfileIncomplete(missingFields);
     };
 
     fetchData();
@@ -193,8 +198,58 @@ const Generate = () => {
     }
   };
 
+  // Check if user profile is complete
+  const checkUserProfile = async () => {
+    try {
+      const response = await fetch('http://localhost:3000/api/settings/profile', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Unable to check profile');
+      }
+
+      const data = await response.json();
+      const profile = data.profile;
+
+      const missingFields = [];
+      if (!profile.firstName?.trim()) missingFields.push("Prénom");
+      if (!profile.lastName?.trim()) missingFields.push("Nom de famille");
+      if (!profile.street?.trim()) missingFields.push("Adresse");
+      if (!profile.postalCode?.trim()) missingFields.push("Code postal");
+      if (!profile.city?.trim()) missingFields.push("Ville");
+      if (!profile.phone?.trim()) missingFields.push("Téléphone");
+
+      return missingFields;
+    } catch (error) {
+      console.error('Error checking profile:', error);
+      return ['Profile check failed'];
+    }
+  };
+
   // MODIFIED: This function now makes a real API call with CV options
   const handleGenerate = async () => {
+    // First, check if user profile is complete
+    const missingFields = await checkUserProfile();
+    if (missingFields.length > 0) {
+      const fieldsText = missingFields.join(", ");
+      toast.error(
+        `Veuillez compléter votre profil avant de générer des lettres de motivation. Champs manquants: ${fieldsText}`,
+        {
+          duration: 6000,
+          action: {
+            label: "Aller aux paramètres",
+            onClick: () => window.location.href = "/settings"
+          }
+        }
+      );
+      return;
+    }
+
     if (cvOption === 'upload' && !selectedFile) {
       toast.error('Please upload your CV first');
       return;
@@ -294,6 +349,45 @@ const Generate = () => {
             <p className="text-muted-foreground max-w-2xl mx-auto">
               Upload your CV and let AI create personalized motivation letters for all your scraped job opportunities.
             </p>
+            
+            {/* Profile Completeness Warning */}
+            {profileIncomplete.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.3 }}
+                className="mt-6 max-w-2xl mx-auto"
+              >
+                <Card className="border-orange-200 bg-orange-50 dark:border-orange-800 dark:bg-orange-950">
+                  <CardContent className="p-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-orange-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <FileCheck className="w-3 h-3 text-white" />
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="font-semibold text-orange-800 dark:text-orange-200 mb-1">
+                          Profil incomplet
+                        </h3>
+                        <p className="text-sm text-orange-700 dark:text-orange-300 mb-3">
+                          Veuillez compléter votre profil pour générer des lettres de motivation personnalisées. 
+                          Champs manquants: <strong>{profileIncomplete.join(", ")}</strong>
+                        </p>
+                        <Button 
+                          size="sm" 
+                          variant="outline"
+                          className="border-orange-300 text-orange-800 hover:bg-orange-100 dark:border-orange-600 dark:text-orange-200 dark:hover:bg-orange-900"
+                          asChild
+                        >
+                          <Link to="/settings">
+                            Compléter le profil
+                          </Link>
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
             
             {/* CV Selection Options */}
             {existingCVs.length > 0 && (
@@ -498,6 +592,7 @@ const Generate = () => {
                     isGenerating ||
                     generationComplete ||
                     jobsToProcess === 0 ||
+                    profileIncomplete.length > 0 ||
                     (cvOption === 'upload' ? !selectedFile : !selectedExistingCV)
                   }
                 >
@@ -505,6 +600,8 @@ const Generate = () => {
                     <><LoadingSpinner size="sm" className="mr-2" />Generating...</>
                   ) : generationComplete ? (
                     <><CheckCircle className="mr-2 h-4 w-4" />Complete</>
+                  ) : profileIncomplete.length > 0 ? (
+                    <><FileCheck className="mr-2 h-4 w-4" />Complete Profile First</>
                   ) : (
                     <><Wand2 className="mr-2 h-4 w-4" />Generate ({jobsToProcess}) Letters</>
                   )}

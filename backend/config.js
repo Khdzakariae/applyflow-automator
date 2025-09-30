@@ -17,7 +17,7 @@ export default {
   // API Configuration
   apis: {
     geminiApiKey: process.env.GEMINI_API_KEY || "YOUR_GEMINI_API_KEY_HERE",
-    geminiModel: process.env.GEMINI_MODEL || "gemini-1.5-flash",
+    geminiModel: process.env.GEMINI_MODEL || "gemini-1.5-flash-latest",
   },
 
   // Scraping Configuration
