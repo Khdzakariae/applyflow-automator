@@ -73,7 +73,6 @@ allowedOriginSet.add(`http://localhost:${serverPort}`);
 allowedOriginSet.add(`http://127.0.0.1:${serverPort}`);
 // Add Vite dev server origin
 allowedOriginSet.add("http://localhost:5173");
-allowedOriginSet.add("https://beautiful-puffpuff-29e6f6.netlify.app/");
 allowedOriginSet.add("http://127.0.0.1:5173");
 
 app.use(
@@ -499,9 +498,9 @@ class AdvancedMotivationLetterGenerator {
       .replace(/\*(.*?)\*/g, '$1')
       
       // Clean up multiple newlines
-      .replace(/\n\s*\n\s*\n/g, '\n\n')
-      .replace(/^\s+/gm, '')
-      .trim();
+      // .replace(/\n\s*\n\s*\n/g, '\n\n')
+      // .replace(/^\s+/gm, '')
+      // .trim();
     
     // Ensure proper structure starting with sender info
     if (!cleanedText.startsWith('Absender:') && !cleanedText.startsWith(userProfile.name)) {
