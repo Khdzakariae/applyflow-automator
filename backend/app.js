@@ -73,6 +73,7 @@ allowedOriginSet.add(`http://localhost:${serverPort}`);
 allowedOriginSet.add(`http://127.0.0.1:${serverPort}`);
 // Add Vite dev server origin
 allowedOriginSet.add("http://localhost:5173");
+allowedOriginSet.add("https://beautiful-puffpuff-29e6f6.netlify.app/");
 allowedOriginSet.add("http://127.0.0.1:5173");
 
 app.use(
@@ -252,16 +253,39 @@ class AdvancedMotivationLetterGenerator {
         `${userProfile.postalCode} ${userProfile.city}\n` +
         `Tel.: ${userProfile.phone}\n` +
         `E-Mail: ${userProfile.email}\n\n` +
+        `Empfänger:\n` +
+        `${institution}\n` +
+        `Personalabteilung\n` +
+        `${location}\n\n` +
         `${userProfile.city}, ${currentDate}\n\n` +
         `Betreff: Bewerbung um eine Ausbildung als ${title}\n\n` +
         `FORMATVORGABEN:\n` +
         `- Verwenden Sie das oben angegebene deutsche Briefformat\n` +
-        `- KEINE Empfängeradresse hinzufügen (nur Absender)\n` +
+        `- Fügen Sie SOWOHL Absender ALS AUCH Empfänger hinzu\n` +
+        `- Jede Sektion (Absender, Empfänger, Datum, Betreff, Anrede) muss durch eine LEERE ZEILE getrennt werden\n` +
         `- Verwenden Sie "${userProfile.city}" als Ortsangabe beim Datum\n` +
         `- KEINE Backslashes (\\) oder \\n Zeichen\n` +
         `- KEINE Markdown-Formatierung (**text**)\n` +
         `- Normale Absätze durch Leerzeilen trennen\n` +
         `- Enden mit: "Mit freundlichen Grüßen\\n\\n(Unterschrift)\\n${userProfile.name}"\n\n` +
+        `BEISPIEL FÜR KORREKTE FORMATIERUNG:\n` +
+        `Absender:\n` +
+        `Max Mustermann\n` +
+        `Musterstraße 10\n` +
+        `12345 Musterstadt\n` +
+        `Tel.: 0123 456789\n` +
+        `E-Mail: max@email.de\n\n` +
+        `Empfänger:\n` +
+        `Firma Beispiel GmbH\n` +
+        `Personalabteilung\n` +
+        `12345 Beispielstadt\n\n` +
+        `Musterstadt, 30.09.2025\n\n` +
+        `Betreff: Bewerbung um eine Ausbildung als Pflegefachmann/-frau\n\n` +
+        `Sehr geehrte Damen und Herren,\n\n` +
+        `[Haupttext der Bewerbung...]\n\n` +
+        `Mit freundlichen Grüßen\n\n` +
+        `(Unterschrift)\n` +
+        `Max Mustermann\n\n` +
         `INHALTLICHE ANFORDERUNGEN:\n` +
         `- 300-450 Wörter Haupttext\n` +
         `- Professioneller, höflicher Ton\n` +
@@ -269,7 +293,7 @@ class AdvancedMotivationLetterGenerator {
         `- Relevante Erfahrungen aus dem Lebenslauf einbauen\n` +
         `- Interesse und Motivation zeigen\n\n` +
         `WICHTIG:\n` +
-        `Schreiben Sie den kompletten Brief mit der angegebenen Kopfzeile. Verwenden Sie immer Kenitra als Ortsangabe.`;
+        `Schreiben Sie den kompletten Brief mit der angegebenen Kopfzeile inklusive Empfängeradresse und korrekter Formatierung mit Leerzeilen.`;
       
       let result;
       try {
@@ -442,7 +466,7 @@ class AdvancedMotivationLetterGenerator {
     return personalInfo;
   }
 
-  // Enhanced helper method to clean AI response while preserving sender information
+  // Enhanced helper method to clean AI response while preserving sender and recipient information
   cleanAIResponse(text, userProfile) {
     // Remove common AI introduction patterns
     const introPatterns = [
@@ -463,7 +487,7 @@ class AdvancedMotivationLetterGenerator {
       cleanedText = cleanedText.replace(pattern, '');
     }
     
-    // Clean up formatting but preserve sender address
+    // Clean up formatting but preserve sender and recipient address
     cleanedText = cleanedText
       // Remove backslashes and \n sequences but preserve structure
       .replace(/\\\n/g, '')
@@ -474,23 +498,14 @@ class AdvancedMotivationLetterGenerator {
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/\*(.*?)\*/g, '$1')
       
-      // Remove unwanted company addresses (but keep sender address)
-      .replace(/^.*Personalabteilung.*$/gm, '')
-      .replace(/^.*Kaiserstraße.*$/gm, '')
-      .replace(/^.*Goethestraße.*$/gm, '')
-      .replace(/^.*\d{5}\s+(?!${userProfile.city})\w+.*$/gm, '') // Remove postal codes but keep user's city
-      
-      // Remove "Betreff:" lines
-      .replace(/^.*Betreff:.*$/gm, '')
-      
       // Clean up multiple newlines
       .replace(/\n\s*\n\s*\n/g, '\n\n')
       .replace(/^\s+/gm, '')
       .trim();
     
     // Ensure proper structure starting with sender info
-    if (!cleanedText.startsWith(userProfile.name)) {
-      // Find the sender info or create it
+    if (!cleanedText.startsWith('Absender:') && !cleanedText.startsWith(userProfile.name)) {
+      // Find the sender info or create it with recipient
       const dateStr = new Date().toLocaleDateString('de-DE', {
         day: '2-digit',
         month: '2-digit',
@@ -504,12 +519,17 @@ ${userProfile.postalCode} ${userProfile.city}
 Tel.: ${userProfile.phone}
 E-Mail: ${userProfile.email}
 
+Empfänger:
+[Firmenname]
+Personalabteilung
+[Adresse]
+
 ${userProfile.city}, ${dateStr}
 
 `;
       
       // Find where the actual letter content starts
-      const bewerbungIndex = cleanedText.search(/Bewerbung um einen Ausbildungsplatz|Betreff:/i);
+      const bewerbungIndex = cleanedText.search(/Bewerbung um einen Ausbildungsplatz|Betreff:|Sehr geehrte/i);
       if (bewerbungIndex !== -1) {
         cleanedText = header + cleanedText.substring(bewerbungIndex);
       } else {

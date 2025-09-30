@@ -7,6 +7,12 @@
     "scripts": {
         "start": "node app.js",
         "dev": "nodemon app.js",
+        "prod": "pm2 start ecosystem.config.json --env production",
+        "prod:stop": "pm2 stop applyflow-backend",
+        "prod:restart": "pm2 restart applyflow-backend",
+        "prod:delete": "pm2 delete applyflow-backend",
+        "status": "pm2 status applyflow-backend",
+        "logs": "pm2 logs applyflow-backend",
         "db:migrate": "prisma migrate dev",
         "db:generate": "prisma generate",
         "db:studio": "prisma studio",
